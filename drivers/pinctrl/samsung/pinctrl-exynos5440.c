@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  * pin-controller/pin-mux/pin-config/gpio-driver for Samsung's EXYNOS5440 SoC.
  *
@@ -107,6 +110,7 @@ struct exynos5440_pmx_func {
  * @nr_groups: number of pin groups available.
  * @pmx_functions: list of pin functions parsed from device tree.
  * @nr_functions: number of pin functions available.
+ * @range: gpio range to register with pinctrl
  */
 struct exynos5440_pinctrl_priv_data {
 	void __iomem			*reg_base;
@@ -117,6 +121,7 @@ struct exynos5440_pinctrl_priv_data {
 	unsigned int			nr_groups;
 	const struct exynos5440_pmx_func	*pmx_functions;
 	unsigned int			nr_functions;
+	struct pinctrl_gpio_range	range;
 };
 
 /**
@@ -539,7 +544,11 @@ static const struct pinconf_ops exynos5440_pinconf_ops = {
 /* gpiolib gpio_set callback function */
 static void exynos5440_gpio_set(struct gpio_chip *gc, unsigned offset, int value)
 {
+#if defined(MY_DEF_HERE)
+	struct exynos5440_pinctrl_priv_data *priv = dev_get_drvdata(gc->parent);
+#else /* MY_DEF_HERE */
 	struct exynos5440_pinctrl_priv_data *priv = dev_get_drvdata(gc->dev);
+#endif /* MY_DEF_HERE */
 	void __iomem *base = priv->reg_base;
 	u32 data;
 
@@ -553,7 +562,11 @@ static void exynos5440_gpio_set(struct gpio_chip *gc, unsigned offset, int value
 /* gpiolib gpio_get callback function */
 static int exynos5440_gpio_get(struct gpio_chip *gc, unsigned offset)
 {
+#if defined(MY_DEF_HERE)
+	struct exynos5440_pinctrl_priv_data *priv = dev_get_drvdata(gc->parent);
+#else /* MY_DEF_HERE */
 	struct exynos5440_pinctrl_priv_data *priv = dev_get_drvdata(gc->dev);
+#endif /* MY_DEF_HERE */
 	void __iomem *base = priv->reg_base;
 	u32 data;
 
@@ -566,7 +579,11 @@ static int exynos5440_gpio_get(struct gpio_chip *gc, unsigned offset)
 /* gpiolib gpio_direction_input callback function */
 static int exynos5440_gpio_direction_input(struct gpio_chip *gc, unsigned offset)
 {
+#if defined(MY_DEF_HERE)
+	struct exynos5440_pinctrl_priv_data *priv = dev_get_drvdata(gc->parent);
+#else /* MY_DEF_HERE */
 	struct exynos5440_pinctrl_priv_data *priv = dev_get_drvdata(gc->dev);
+#endif /* MY_DEF_HERE */
 	void __iomem *base = priv->reg_base;
 	u32 data;
 
@@ -586,7 +603,11 @@ static int exynos5440_gpio_direction_input(struct gpio_chip *gc, unsigned offset
 static int exynos5440_gpio_direction_output(struct gpio_chip *gc, unsigned offset,
 							int value)
 {
+#if defined(MY_DEF_HERE)
+	struct exynos5440_pinctrl_priv_data *priv = dev_get_drvdata(gc->parent);
+#else /* MY_DEF_HERE */
 	struct exynos5440_pinctrl_priv_data *priv = dev_get_drvdata(gc->dev);
+#endif /* MY_DEF_HERE */
 	void __iomem *base = priv->reg_base;
 	u32 data;
 
@@ -607,7 +628,11 @@ static int exynos5440_gpio_direction_output(struct gpio_chip *gc, unsigned offse
 /* gpiolib gpio_to_irq callback function */
 static int exynos5440_gpio_to_irq(struct gpio_chip *gc, unsigned offset)
 {
+#if defined(MY_DEF_HERE)
+	struct exynos5440_pinctrl_priv_data *priv = dev_get_drvdata(gc->parent);
+#else /* MY_DEF_HERE */
 	struct exynos5440_pinctrl_priv_data *priv = dev_get_drvdata(gc->dev);
+#endif /* MY_DEF_HERE */
 	unsigned int virq;
 
 	if (offset < 16 || offset > 23)
@@ -742,7 +767,6 @@ static int exynos5440_pinctrl_register(struct platform_device *pdev,
 	struct pinctrl_desc *ctrldesc;
 	struct pinctrl_dev *pctl_dev;
 	struct pinctrl_pin_desc *pindesc, *pdesc;
-	struct pinctrl_gpio_range grange;
 	char *pin_names;
 	int pin, ret;
 
@@ -794,12 +818,12 @@ static int exynos5440_pinctrl_register(struct platform_device *pdev,
 		return PTR_ERR(pctl_dev);
 	}
 
-	grange.name = "exynos5440-pctrl-gpio-range";
-	grange.id = 0;
-	grange.base = 0;
-	grange.npins = EXYNOS5440_MAX_PINS;
-	grange.gc = priv->gc;
-	pinctrl_add_gpio_range(pctl_dev, &grange);
+	priv->range.name = "exynos5440-pctrl-gpio-range";
+	priv->range.id = 0;
+	priv->range.base = 0;
+	priv->range.npins = EXYNOS5440_MAX_PINS;
+	priv->range.gc = priv->gc;
+	pinctrl_add_gpio_range(pctl_dev, &priv->range);
 	return 0;
 }
 
@@ -817,7 +841,11 @@ static int exynos5440_gpiolib_register(struct platform_device *pdev,
 	priv->gc = gc;
 	gc->base = 0;
 	gc->ngpio = EXYNOS5440_MAX_PINS;
+#if defined(MY_DEF_HERE)
+	gc->parent = &pdev->dev;
+#else /* MY_DEF_HERE */
 	gc->dev = &pdev->dev;
+#endif /* MY_DEF_HERE */
 	gc->set = exynos5440_gpio_set;
 	gc->get = exynos5440_gpio_get;
 	gc->direction_input = exynos5440_gpio_direction_input;

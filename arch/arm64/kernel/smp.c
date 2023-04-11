@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  * SMP initialisation and IPI support
  * Based on arch/arm/kernel/smp.c
@@ -57,6 +60,9 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/ipi.h>
 
+#if defined(MY_ABC_HERE)
+extern bool gBlSynoSysrqB;
+#endif /* defined(MY_ABC_HERE) */
 /*
  * as from 2.5, kernels no longer have an init_tasks structure
  * so we need some other way of telling a new secondary core
@@ -131,7 +137,7 @@ static void smp_store_cpu_info(unsigned int cpuid)
  * This is the secondary CPU boot entry.  We're using this CPUs
  * idle thread stack, but a set of temporary page tables.
  */
-asmlinkage void secondary_start_kernel(void)
+asmlinkage notrace void secondary_start_kernel(void)
 {
 	struct mm_struct *mm = &init_mm;
 	unsigned int cpu = smp_processor_id();
@@ -188,7 +194,6 @@ asmlinkage void secondary_start_kernel(void)
 	set_cpu_online(cpu, true);
 	complete(&cpu_running);
 
-	local_dbg_enable();
 	local_irq_enable();
 	local_async_enable();
 
@@ -334,8 +339,8 @@ void __init smp_cpus_done(unsigned int max_cpus)
 
 void __init smp_prepare_boot_cpu(void)
 {
-	cpuinfo_store_boot_cpu();
 	set_my_cpu_offset(per_cpu_offset(smp_processor_id()));
+	cpuinfo_store_boot_cpu();
 }
 
 static u64 __init of_get_cpu_mpidr(struct device_node *dn)
@@ -689,7 +694,13 @@ static void ipi_cpu_stop(unsigned int cpu)
 	    system_state == SYSTEM_RUNNING) {
 		raw_spin_lock(&stop_lock);
 		pr_crit("CPU%u: stopping\n", cpu);
+#if defined(MY_ABC_HERE)
+		if (false == gBlSynoSysrqB) {
+			dump_stack();
+		}
+#else /* defined(MY_ABC_HERE) */
 		dump_stack();
+#endif /* defined(MY_ABC_HERE) */
 		raw_spin_unlock(&stop_lock);
 	}
 

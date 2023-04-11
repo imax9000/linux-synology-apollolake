@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  * Copyright (c) 2014-2015 Hisilicon Limited.
  *
@@ -72,7 +75,11 @@ static void hns_get_mdix_mode(struct net_device *net_dev,
 	struct hns_nic_priv *priv = netdev_priv(net_dev);
 	struct phy_device *phy_dev = priv->phy;
 
+#if defined(MY_DEF_HERE)
+	if (!phy_dev || !phy_dev->mdio.bus) {
+#else /* MY_DEF_HERE */
 	if (!phy_dev || !phy_dev->bus) {
+#endif /* MY_DEF_HERE */
 		cmd->eth_tp_mdix_ctrl = ETH_TP_MDI_INVALID;
 		cmd->eth_tp_mdix = ETH_TP_MDI_INVALID;
 		return;
@@ -1000,8 +1007,10 @@ int hns_get_sset_count(struct net_device *netdev, int stringset)
 			cnt--;
 
 		return cnt;
-	} else {
+	} else if (stringset == ETH_SS_STATS) {
 		return (HNS_NET_STATS_CNT + ops->get_sset_count(h, stringset));
+	} else {
+		return -EOPNOTSUPP;
 	}
 }
 

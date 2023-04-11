@@ -4,6 +4,29 @@
 
 obj-$(CONFIG_SYSTEM_TRUSTED_KEYRING) += system_keyring.o system_certificates.o
 
+ifeq ($(CONFIG_SYNO_KEY),y)
+
+$(eval $(call config_filename,SYSTEM_TRUSTED_KEYS))
+$(eval $(call config_filename,MODULE_SIG_KEY))
+
+targets += signing_key.x509 x509_certificate_list
+$(obj)/system_certificates.o: $(obj)/signing_key.x509 $(obj)/x509_certificate_list
+$(obj)/signing_key.x509: $(MODULE_SIG_KEY_SRCPREFIX)$(MODULE_SIG_KEY_FILENAME)
+	$(call cmd,shipped,$(MODULE_SIG_KEY_SRCPREFIX)$(CONFIG_MODULE_SIG_KEY),$@)
+$(obj)/x509_certificate_list: $(SYSTEM_TRUSTED_KEYS_SRCPREFIX)$(SYSTEM_TRUSTED_KEYS_FILENAME)
+	$(call cmd,shipped,$(SYSTEM_TRUSTED_KEYS_SRCPREFIX)$(CONFIG_SYSTEM_TRUSTED_KEYS),$@)
+
+ifeq ($(CONFIG_SYNO_SYSTEM_UNTRUSTED_KEYRING),y)
+
+$(eval $(call config_filename,SYNO_SYSTEM_UNTRUSTED_KEYS))
+targets += x509_certificate_list_untrusted
+$(obj)/system_certificates.o: $(obj)/x509_certificate_list_untrusted
+$(obj)/x509_certificate_list_untrusted: $(SYSTEM_UNTRUSTED_KEYS_SRCPREFIX)$(SYNO_SYSTEM_UNTRUSTED_KEYS_FILENAME)
+	$(call cmd,shipped,$(SYSTEM_UNTRUSTED_KEYS_SRCPREFIX)$(CONFIG_SYNO_SYSTEM_UNTRUSTED_KEYS),$@)
+endif
+
+else
+
 ifeq ($(CONFIG_SYSTEM_TRUSTED_KEYRING),y)
 
 $(eval $(call config_filename,SYSTEM_TRUSTED_KEYS))
@@ -36,29 +59,34 @@ ifndef CONFIG_MODULE_SIG_HASH
 $(error Could not determine digest type to use from kernel config)
 endif
 
+redirect_openssl	= 2>&1
+quiet_redirect_openssl	= 2>&1
+silent_redirect_openssl = 2>/dev/null
+
 # We do it this way rather than having a boolean option for enabling an
 # external private key, because 'make randconfig' might enable such a
 # boolean option and we unfortunately can't make it depend on !RANDCONFIG.
 ifeq ($(CONFIG_MODULE_SIG_KEY),"certs/signing_key.pem")
 $(obj)/signing_key.pem: $(obj)/x509.genkey
-	@echo "###"
-	@echo "### Now generating an X.509 key pair to be used for signing modules."
-	@echo "###"
-	@echo "### If this takes a long time, you might wish to run rngd in the"
-	@echo "### background to keep the supply of entropy topped up.  It"
-	@echo "### needs to be run as root, and uses a hardware random"
-	@echo "### number generator if one is available."
-	@echo "###"
-	openssl req -new -nodes -utf8 -$(CONFIG_MODULE_SIG_HASH) -days 36500 \
+	@$(kecho) "###"
+	@$(kecho) "### Now generating an X.509 key pair to be used for signing modules."
+	@$(kecho) "###"
+	@$(kecho) "### If this takes a long time, you might wish to run rngd in the"
+	@$(kecho) "### background to keep the supply of entropy topped up.  It"
+	@$(kecho) "### needs to be run as root, and uses a hardware random"
+	@$(kecho) "### number generator if one is available."
+	@$(kecho) "###"
+	$(Q)openssl req -new -nodes -utf8 -$(CONFIG_MODULE_SIG_HASH) -days 36500 \
 		-batch -x509 -config $(obj)/x509.genkey \
 		-outform PEM -out $(obj)/signing_key.pem \
-		-keyout $(obj)/signing_key.pem 2>&1
-	@echo "###"
-	@echo "### Key pair generated."
-	@echo "###"
+		-keyout $(obj)/signing_key.pem \
+		$($(quiet)redirect_openssl)
+	@$(kecho) "###"
+	@$(kecho) "### Key pair generated."
+	@$(kecho) "###"
 
 $(obj)/x509.genkey:
-	@echo Generating X.509 key generation config
+	@$(kecho) Generating X.509 key generation config
 	@echo  >$@ "[ req ]"
 	@echo >>$@ "default_bits = 4096"
 	@echo >>$@ "distinguished_name = req_distinguished_name"
@@ -91,4 +119,5 @@ $(obj)/system_certificates.o: $(obj)/signing_key.x509
 targets += signing_key.x509
 $(obj)/signing_key.x509: scripts/extract-cert $(X509_DEP) FORCE
 	$(call if_changed,extract_certs,$(MODULE_SIG_KEY_SRCPREFIX)$(CONFIG_MODULE_SIG_KEY))
+endif
 endif

@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  * SuperH FLCTL nand controller
  *
@@ -160,7 +163,7 @@ static void flctl_setup_dma(struct sh_flctl *flctl)
 
 	memset(&cfg, 0, sizeof(cfg));
 	cfg.direction = DMA_MEM_TO_DEV;
-	cfg.dst_addr = (dma_addr_t)FLDTFIFO(flctl);
+	cfg.dst_addr = flctl->fifo;
 	cfg.src_addr = 0;
 	ret = dmaengine_slave_config(flctl->chan_fifo0_tx, &cfg);
 	if (ret < 0)
@@ -176,7 +179,7 @@ static void flctl_setup_dma(struct sh_flctl *flctl)
 
 	cfg.direction = DMA_DEV_TO_MEM;
 	cfg.dst_addr = 0;
-	cfg.src_addr = (dma_addr_t)FLDTFIFO(flctl);
+	cfg.src_addr = flctl->fifo;
 	ret = dmaengine_slave_config(flctl->chan_fifo0_rx, &cfg);
 	if (ret < 0)
 		goto err;
@@ -1086,7 +1089,11 @@ static int flctl_probe(struct platform_device *pdev)
 	struct sh_flctl_platform_data *pdata;
 	int ret;
 	int irq;
+#if defined(MY_DEF_HERE)
+//do nothing
+#else /* MY_DEF_HERE */
 	struct mtd_part_parser_data ppdata = {};
+#endif /* MY_DEF_HERE */
 
 	flctl = devm_kzalloc(&pdev->dev, sizeof(struct sh_flctl), GFP_KERNEL);
 	if (!flctl)
@@ -1096,6 +1103,7 @@ static int flctl_probe(struct platform_device *pdev)
 	flctl->reg = devm_ioremap_resource(&pdev->dev, res);
 	if (IS_ERR(flctl->reg))
 		return PTR_ERR(flctl->reg);
+	flctl->fifo = res->start + 0x24; /* FLDTFIFO */
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0) {
@@ -1123,6 +1131,9 @@ static int flctl_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, flctl);
 	flctl_mtd = &flctl->mtd;
 	nand = &flctl->chip;
+#if defined(MY_DEF_HERE)
+	nand_set_flash_node(nand, pdev->dev.of_node);
+#endif /* MY_DEF_HERE */
 	flctl_mtd->priv = nand;
 	flctl_mtd->dev.parent = &pdev->dev;
 	flctl->pdev = pdev;
@@ -1163,9 +1174,13 @@ static int flctl_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_chip;
 
+#if defined(MY_DEF_HERE)
+	ret = mtd_device_register(flctl_mtd, pdata->parts, pdata->nr_parts);
+#else /* MY_DEF_HERE */
 	ppdata.of_node = pdev->dev.of_node;
 	ret = mtd_device_parse_register(flctl_mtd, NULL, &ppdata, pdata->parts,
 			pdata->nr_parts);
+#endif /* MY_DEF_HERE */
 
 	return 0;
 

@@ -84,6 +84,7 @@ build_path_from_dentry(struct dentry *direntry)
 	struct dentry *temp;
 	int namelen;
 	int dfsplen;
+	int pplen = 0;
 	char *full_path;
 	char dirsep;
 	struct cifs_sb_info *cifs_sb = CIFS_SB(direntry->d_sb);
@@ -95,8 +96,12 @@ build_path_from_dentry(struct dentry *direntry)
 		dfsplen = strnlen(tcon->treeName, MAX_TREE_SIZE + 1);
 	else
 		dfsplen = 0;
+
+	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_USE_PREFIX_PATH)
+		pplen = cifs_sb->prepath ? strlen(cifs_sb->prepath) + 1 : 0;
+
 cifs_bp_rename_retry:
-	namelen = dfsplen;
+	namelen = dfsplen + pplen;
 	seq = read_seqbegin(&rename_lock);
 	rcu_read_lock();
 	for (temp = direntry; !IS_ROOT(temp);) {
@@ -137,7 +142,7 @@ cifs_bp_rename_retry:
 		}
 	}
 	rcu_read_unlock();
-	if (namelen != dfsplen || read_seqretry(&rename_lock, seq)) {
+	if (namelen != dfsplen + pplen || read_seqretry(&rename_lock, seq)) {
 		cifs_dbg(FYI, "did not end path lookup where expected. namelen=%ddfsplen=%d\n",
 			 namelen, dfsplen);
 		/* presumably this is only possible if racing with a rename
@@ -153,6 +158,17 @@ cifs_bp_rename_retry:
 	   those safely to '/' if any are found in the middle of the prepath */
 	/* BB test paths to Windows with '/' in the midst of prepath */
 
+	if (pplen) {
+		int i;
+
+		cifs_dbg(FYI, "using cifs_sb prepath <%s>\n", cifs_sb->prepath);
+		memcpy(full_path+dfsplen+1, cifs_sb->prepath, pplen-1);
+		full_path[dfsplen] = dirsep;
+		for (i = 0; i < pplen-1; i++)
+			if (full_path[dfsplen+1+i] == '/')
+				full_path[dfsplen+1+i] = CIFS_DIR_SEP(cifs_sb);
+	}
+
 	if (dfsplen) {
 		strncpy(full_path, tcon->treeName, dfsplen);
 		if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_POSIX_PATHS) {
@@ -167,14 +183,20 @@ cifs_bp_rename_retry:
 }
 
 /*
+ * Don't allow path components longer than the server max.
  * Don't allow the separator character in a path component.
  * The VFS will not allow "/", but "\" is allowed by posix.
  */
 static int
-check_name(struct dentry *direntry)
+check_name(struct dentry *direntry, struct cifs_tcon *tcon)
 {
 	struct cifs_sb_info *cifs_sb = CIFS_SB(direntry->d_sb);
 	int i;
+
+	if (unlikely(tcon->fsAttrInfo.MaxPathNameComponentLength &&
+		     direntry->d_name.len >
+		     le32_to_cpu(tcon->fsAttrInfo.MaxPathNameComponentLength)))
+		return -ENAMETOOLONG;
 
 	if (!(cifs_sb->mnt_cifs_flags & CIFS_MOUNT_POSIX_PATHS)) {
 		for (i = 0; i < direntry->d_name.len; i++) {
@@ -227,6 +249,13 @@ cifs_do_create(struct inode *inode, struct dentry *direntry, unsigned int xid,
 			if (newinode == NULL) {
 				/* query inode info */
 				goto cifs_create_get_file_info;
+			}
+
+			if (S_ISDIR(newinode->i_mode)) {
+				CIFSSMBClose(xid, tcon, fid->netfid);
+				iput(newinode);
+				rc = -EISDIR;
+				goto out;
 			}
 
 			if (!S_ISREG(newinode->i_mode)) {
@@ -399,10 +428,14 @@ cifs_create_set_dentry:
 	if (rc != 0) {
 		cifs_dbg(FYI, "Create worked, get_inode_info failed rc = %d\n",
 			 rc);
-		if (server->ops->close)
-			server->ops->close(xid, tcon, fid);
-		goto out;
+		goto out_err;
 	}
+
+	if (S_ISDIR(newinode->i_mode)) {
+		rc = -EISDIR;
+		goto out_err;
+	}
+
 	d_drop(direntry);
 	d_add(direntry, newinode);
 
@@ -410,6 +443,13 @@ out:
 	kfree(buf);
 	kfree(full_path);
 	return rc;
+
+out_err:
+	if (server->ops->close)
+		server->ops->close(xid, tcon, fid);
+	if (newinode)
+		iput(newinode);
+	goto out;
 }
 
 int
@@ -455,10 +495,6 @@ cifs_atomic_open(struct inode *inode, struct dentry *direntry,
 		return finish_no_open(file, res);
 	}
 
-	rc = check_name(direntry);
-	if (rc)
-		return rc;
-
 	xid = get_xid();
 
 	cifs_dbg(FYI, "parent inode = 0x%p name is: %pd and dentry = 0x%p\n",
@@ -471,6 +507,11 @@ cifs_atomic_open(struct inode *inode, struct dentry *direntry,
 	}
 
 	tcon = tlink_tcon(tlink);
+
+	rc = check_name(direntry, tcon);
+	if (rc)
+		goto out;
+
 	server = tcon->ses->server;
 
 	if (server->ops->new_lease_key)
@@ -632,6 +673,9 @@ int cifs_mknod(struct inode *inode, struct dentry *direntry, umode_t mode,
 		goto mknod_out;
 	}
 
+	if (!S_ISCHR(mode) && !S_ISBLK(mode))
+		goto mknod_out;
+
 	if (!(cifs_sb->mnt_cifs_flags & CIFS_MOUNT_UNX_EMUL))
 		goto mknod_out;
 
@@ -640,10 +684,8 @@ int cifs_mknod(struct inode *inode, struct dentry *direntry, umode_t mode,
 
 	buf = kmalloc(sizeof(FILE_ALL_INFO), GFP_KERNEL);
 	if (buf == NULL) {
-		kfree(full_path);
 		rc = -ENOMEM;
-		free_xid(xid);
-		return rc;
+		goto mknod_out;
 	}
 
 	if (backup_cred(cifs_sb))
@@ -690,7 +732,7 @@ int cifs_mknod(struct inode *inode, struct dentry *direntry, umode_t mode,
 		pdev->minor = cpu_to_le64(MINOR(device_number));
 		rc = tcon->ses->server->ops->sync_write(xid, &fid, &io_parms,
 							&bytes_written, iov, 1);
-	} /* else if (S_ISFIFO) */
+	}
 	tcon->ses->server->ops->close(xid, tcon, &fid);
 	d_drop(direntry);
 
@@ -731,7 +773,7 @@ cifs_lookup(struct inode *parent_dir_inode, struct dentry *direntry,
 	}
 	pTcon = tlink_tcon(tlink);
 
-	rc = check_name(direntry);
+	rc = check_name(direntry, pTcon);
 	if (rc)
 		goto lookup_out;
 
@@ -853,17 +895,12 @@ static int cifs_ci_hash(const struct dentry *dentry, struct qstr *q)
 {
 	struct nls_table *codepage = CIFS_SB(dentry->d_sb)->local_nls;
 	unsigned long hash;
-	wchar_t c;
-	int i, charlen;
+	int i;
 
 	hash = init_name_hash();
-	for (i = 0; i < q->len; i += charlen) {
-		charlen = codepage->char2uni(&q->name[i], q->len - i, &c);
-		/* error out if we can't convert the character */
-		if (unlikely(charlen < 0))
-			return charlen;
-		hash = partial_name_hash(cifs_toupper(c), hash);
-	}
+	for (i = 0; i < q->len; i++)
+		hash = partial_name_hash(nls_tolower(codepage, q->name[i]),
+					 hash);
 	q->hash = end_name_hash(hash);
 
 	return 0;
@@ -873,47 +910,11 @@ static int cifs_ci_compare(const struct dentry *parent, const struct dentry *den
 		unsigned int len, const char *str, const struct qstr *name)
 {
 	struct nls_table *codepage = CIFS_SB(parent->d_sb)->local_nls;
-	wchar_t c1, c2;
-	int i, l1, l2;
 
-	/*
-	 * We make the assumption here that uppercase characters in the local
-	 * codepage are always the same length as their lowercase counterparts.
-	 *
-	 * If that's ever not the case, then this will fail to match it.
-	 */
-	if (name->len != len)
-		return 1;
-
-	for (i = 0; i < len; i += l1) {
-		/* Convert characters in both strings to UTF-16. */
-		l1 = codepage->char2uni(&str[i], len - i, &c1);
-		l2 = codepage->char2uni(&name->name[i], name->len - i, &c2);
-
-		/*
-		 * If we can't convert either character, just declare it to
-		 * be 1 byte long and compare the original byte.
-		 */
-		if (unlikely(l1 < 0 && l2 < 0)) {
-			if (str[i] != name->name[i])
-				return 1;
-			l1 = 1;
-			continue;
-		}
-
-		/*
-		 * Here, we again ass|u|me that upper/lowercase versions of
-		 * a character are the same length in the local NLS.
-		 */
-		if (l1 != l2)
-			return 1;
-
-		/* Now compare uppercase versions of these characters */
-		if (cifs_toupper(c1) != cifs_toupper(c2))
-			return 1;
-	}
-
-	return 0;
+	if ((name->len == len) &&
+	    (nls_strnicmp(codepage, name->name, str, len) == 0))
+		return 0;
+	return 1;
 }
 
 const struct dentry_operations cifs_ci_dentry_ops = {

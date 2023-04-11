@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  *  step_wise.c - A step-by-step Thermal throttling governor
  *
@@ -31,8 +34,7 @@
  * If the temperature is higher than a trip point,
  *    a. if the trend is THERMAL_TREND_RAISING, use higher cooling
  *       state for this trip point
- *    b. if the trend is THERMAL_TREND_DROPPING, use lower cooling
- *       state for this trip point
+ *    b. if the trend is THERMAL_TREND_DROPPING, do nothing
  *    c. if the trend is THERMAL_TREND_RAISE_FULL, use upper limit
  *       for this trip point
  *    d. if the trend is THERMAL_TREND_DROP_FULL, use lower limit
@@ -63,6 +65,19 @@ static unsigned long get_target_state(struct thermal_instance *instance,
 	next_target = instance->target;
 	dev_dbg(&cdev->device, "cur_state=%ld\n", cur_state);
 
+	if (!instance->initialized) {
+		if (throttle) {
+			next_target = (cur_state + 1) >= instance->upper ?
+					instance->upper :
+					((cur_state + 1) < instance->lower ?
+					instance->lower : (cur_state + 1));
+		} else {
+			next_target = THERMAL_NO_TARGET;
+		}
+
+		return next_target;
+	}
+
 	switch (trend) {
 	case THERMAL_TREND_RAISING:
 		if (throttle) {
@@ -81,9 +96,11 @@ static unsigned long get_target_state(struct thermal_instance *instance,
 			if (!throttle)
 				next_target = THERMAL_NO_TARGET;
 		} else {
-			next_target = cur_state - 1;
-			if (next_target > instance->upper)
-				next_target = instance->upper;
+			if (!throttle) {
+				next_target = cur_state - 1;
+				if (next_target > instance->upper)
+					next_target = instance->upper;
+			}
 		}
 		break;
 	case THERMAL_TREND_DROP_FULL:
@@ -113,6 +130,9 @@ static void update_passive_instance(struct thermal_zone_device *tz,
 
 static void thermal_zone_trip_update(struct thermal_zone_device *tz, int trip)
 {
+#if defined(CONFIG_RTK_THERMAL) && defined(MY_DEF_HERE)
+	int trip_hyst;
+#endif
 	int trip_temp;
 	enum thermal_trip_type trip_type;
 	enum thermal_trend trend;
@@ -123,9 +143,15 @@ static void thermal_zone_trip_update(struct thermal_zone_device *tz, int trip)
 	if (trip == THERMAL_TRIPS_NONE) {
 		trip_temp = tz->forced_passive;
 		trip_type = THERMAL_TRIPS_NONE;
+#if defined(CONFIG_RTK_THERMAL) && defined(MY_DEF_HERE)
+		trip_hyst = 0;
+#endif
 	} else {
 		tz->ops->get_trip_temp(tz, trip, &trip_temp);
 		tz->ops->get_trip_type(tz, trip, &trip_type);
+#if defined(CONFIG_RTK_THERMAL) && defined(MY_DEF_HERE)
+		tz->ops->get_trip_hyst(tz, trip, &trip_hyst);
+#endif
 	}
 
 	trend = get_tz_trend(tz, trip);
@@ -146,10 +172,20 @@ static void thermal_zone_trip_update(struct thermal_zone_device *tz, int trip)
 
 		old_target = instance->target;
 		instance->target = get_target_state(instance, trend, throttle);
+
+
+#if defined(CONFIG_RTK_THERMAL) && defined(MY_DEF_HERE)
+		/* for hysteresis */
+		if ((int)instance->target < old_target &&
+			tz->temperature >= (trip_temp - trip_hyst)) {
+			instance->target = old_target;
+		}
+#endif
+
 		dev_dbg(&instance->cdev->device, "old_target=%d, target=%d\n",
 					old_target, (int)instance->target);
 
-		if (old_target == instance->target)
+		if (instance->initialized && old_target == instance->target)
 			continue;
 
 		/* Activate a passive thermal instance */
@@ -161,7 +197,7 @@ static void thermal_zone_trip_update(struct thermal_zone_device *tz, int trip)
 			instance->target == THERMAL_NO_TARGET)
 			update_passive_instance(tz, trip_type, -1);
 
-
+		instance->initialized = true;
 		instance->cdev->updated = false; /* cdev needs update */
 	}
 

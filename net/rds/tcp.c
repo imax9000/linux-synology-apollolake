@@ -346,7 +346,7 @@ static void rds_tcp_kill_sock(struct net *net)
 	list_for_each_entry_safe(tc, _tc, &rds_tcp_conn_list, t_tcp_node) {
 		struct net *c_net = read_pnet(&tc->conn->c_net);
 
-		if (net != c_net || !tc->t_sock)
+		if (net != c_net)
 			continue;
 		list_move_tail(&tc->t_tcp_node, &tmp_list);
 	}
@@ -421,7 +421,7 @@ static int rds_tcp_init(void)
 
 	ret = rds_tcp_recv_init();
 	if (ret)
-		goto out_slab;
+		goto out_pernet;
 
 	ret = rds_trans_register(&rds_tcp_transport);
 	if (ret)
@@ -433,8 +433,9 @@ static int rds_tcp_init(void)
 
 out_recv:
 	rds_tcp_recv_exit();
-out_slab:
+out_pernet:
 	unregister_pernet_subsys(&rds_tcp_net_ops);
+out_slab:
 	kmem_cache_destroy(rds_tcp_conn_slab);
 out:
 	return ret;

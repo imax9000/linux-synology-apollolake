@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /* Driver for USB Mass Storage compliant devices
  *
  * Current development and maintenance by:
@@ -63,6 +66,13 @@
 #include <linux/blkdev.h>
 #include "../../scsi/sd.h"
 
+#ifdef MY_ABC_HERE
+#include <linux/module.h>
+#endif /* MY_ABC_HERE */
+
+#ifdef MY_ABC_HERE
+#include <linux/usb/syno_quirks.h>
+#endif /* MY_ABC_HERE */
 
 /***********************************************************************
  * Data transfer routines
@@ -599,6 +609,16 @@ void usb_stor_invoke_transport(struct scsi_cmnd *srb, struct us_data *us)
 	int need_auto_sense;
 	int result;
 
+#ifdef MY_ABC_HERE
+	if (unlikely((us->pusb_dev->syno_quirks &
+					SYNO_USB_QUIRK_SYNCHRONIZE_CACHE_FILTER) &&
+				 SYNCHRONIZE_CACHE == srb->cmnd[0])) {
+		srb->result = SAM_STAT_GOOD;
+		msleep(3000);
+		return;
+	}
+#endif /* MY_ABC_HERE */
+
 	/* send the command to the transport layer */
 	scsi_set_resid(srb, 0);
 	result = us->transport(srb, us);
@@ -808,12 +828,24 @@ Retry_Sense:
 			if (result == USB_STOR_TRANSPORT_GOOD) {
 				srb->result = SAM_STAT_GOOD;
 				srb->sense_buffer[0] = 0x0;
+			}
+
+			/*
+			 * ATA-passthru commands use sense data to report
+			 * the command completion status, and often devices
+			 * return Check Condition status when nothing is
+			 * wrong.
+			 */
+			else if (srb->cmnd[0] == ATA_16 ||
+					srb->cmnd[0] == ATA_12) {
+				/* leave the data alone */
+			}
 
 			/* If there was a problem, report an unspecified
 			 * hardware error to prevent the higher layers from
 			 * entering an infinite retry loop.
 			 */
-			} else {
+			else {
 				srb->result = DID_ERROR << 16;
 				if ((sshdr.response_code & 0x72) == 0x72)
 					srb->sense_buffer[1] = HARDWARE_ERROR;
@@ -919,10 +951,15 @@ int usb_stor_CB_transport(struct scsi_cmnd *srb, struct us_data *us)
 
 	/* COMMAND STAGE */
 	/* let's send the command via the control pipe */
+	/*
+	 * Command is sometime (f.e. after scsi_eh_prep_cmnd) on the stack.
+	 * Stack may be vmallocated.  So no DMA for us.  Make a copy.
+	 */
+	memcpy(us->iobuf, srb->cmnd, srb->cmd_len);
 	result = usb_stor_ctrl_transfer(us, us->send_ctrl_pipe,
 				      US_CBI_ADSC, 
 				      USB_TYPE_CLASS | USB_RECIP_INTERFACE, 0, 
-				      us->ifnum, srb->cmnd, srb->cmd_len);
+				      us->ifnum, us->iobuf, srb->cmd_len);
 
 	/* check the return code for the command */
 	usb_stor_dbg(us, "Call to usb_stor_ctrl_transfer() returned %d\n",
@@ -1060,6 +1097,29 @@ int usb_stor_Bulk_max_lun(struct us_data *us)
 	return 0;
 }
 
+#ifdef MY_ABC_HERE
+int extra_delay = 0;
+module_param(extra_delay, int, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+int extra_delay_time = 0;
+module_param(extra_delay_time, int, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+
+static inline void usb_stor_delay(struct us_data *us)
+{
+	/* 0 : no delay
+	 * 1 : for customized
+	 * others : for original delay mechanism (just for Jmicron, Samsung, Lacie,
+	 * Freecom, Iomega, SimpleTech, Icybox)
+	 */
+	if (likely(extra_delay == 0))
+		return;
+
+	if (1 == extra_delay && 0 < extra_delay_time) {
+		udelay(extra_delay_time);
+		return;
+	}
+}
+#endif /* MY_ABC_HERE */
+
 int usb_stor_Bulk_transport(struct scsi_cmnd *srb, struct us_data *us)
 {
 	struct bulk_cb_wrap *bcb = (struct bulk_cb_wrap *) us->iobuf;
@@ -1100,6 +1160,9 @@ int usb_stor_Bulk_transport(struct scsi_cmnd *srb, struct us_data *us)
 		     bcb->Length);
 	result = usb_stor_bulk_transfer_buf(us, us->send_bulk_pipe,
 				bcb, cbwlen, NULL);
+#ifdef MY_ABC_HERE
+	usb_stor_delay(us);
+#endif /* MY_ABC_HERE */
 	usb_stor_dbg(us, "Bulk command transfer result=%d\n", result);
 	if (result != USB_STOR_XFER_GOOD)
 		return USB_STOR_TRANSPORT_ERROR;
@@ -1117,6 +1180,9 @@ int usb_stor_Bulk_transport(struct scsi_cmnd *srb, struct us_data *us)
 		unsigned int pipe = srb->sc_data_direction == DMA_FROM_DEVICE ? 
 				us->recv_bulk_pipe : us->send_bulk_pipe;
 		result = usb_stor_bulk_srb(us, pipe, srb);
+#ifdef MY_ABC_HERE
+		usb_stor_delay(us);
+#endif /* MY_ABC_HERE */
 		usb_stor_dbg(us, "Bulk data transfer result 0x%x\n", result);
 		if (result == USB_STOR_XFER_ERROR)
 			return USB_STOR_TRANSPORT_ERROR;
@@ -1164,6 +1230,9 @@ int usb_stor_Bulk_transport(struct scsi_cmnd *srb, struct us_data *us)
 	usb_stor_dbg(us, "Attempting to get CSW...\n");
 	result = usb_stor_bulk_transfer_buf(us, us->recv_bulk_pipe,
 				bcs, US_BULK_CS_WRAP_LEN, &cswlen);
+#ifdef MY_ABC_HERE
+	usb_stor_delay(us);
+#endif /* MY_ABC_HERE */
 
 	/* Some broken devices add unnecessary zero-length packets to the
 	 * end of their data transfers.  Such packets show up as 0-length
@@ -1173,6 +1242,9 @@ int usb_stor_Bulk_transport(struct scsi_cmnd *srb, struct us_data *us)
 		usb_stor_dbg(us, "Received 0-length CSW; retrying...\n");
 		result = usb_stor_bulk_transfer_buf(us, us->recv_bulk_pipe,
 				bcs, US_BULK_CS_WRAP_LEN, &cswlen);
+#ifdef MY_ABC_HERE
+		usb_stor_delay(us);
+#endif /* MY_ABC_HERE */
 	}
 
 	/* did the attempt to read the CSW fail? */
@@ -1182,6 +1254,9 @@ int usb_stor_Bulk_transport(struct scsi_cmnd *srb, struct us_data *us)
 		usb_stor_dbg(us, "Attempting to get CSW (2nd try)...\n");
 		result = usb_stor_bulk_transfer_buf(us, us->recv_bulk_pipe,
 				bcs, US_BULK_CS_WRAP_LEN, NULL);
+#ifdef MY_ABC_HERE
+		usb_stor_delay(us);
+#endif /* MY_ABC_HERE */
 	}
 
 	/* if we still have a failure at this point, we're in trouble */

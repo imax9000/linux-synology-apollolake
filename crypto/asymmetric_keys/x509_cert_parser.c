@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /* X.509 certificate parser
  *
  * Copyright (C) 2012 Red Hat, Inc. All Rights Reserved.
@@ -399,6 +402,8 @@ int x509_extract_key_data(void *context, size_t hdrlen,
 	ctx->cert->pub->pkey_algo = PKEY_ALGO_RSA;
 
 	/* Discard the BIT STRING metadata */
+	if (vlen < 1 || *(const u8 *)value != 0)
+		return -EBADMSG;
 	ctx->key = value + 1;
 	ctx->key_size = vlen - 1;
 	return 0;
@@ -494,7 +499,7 @@ int x509_decode_time(time64_t *_t,  size_t hdrlen,
 		     unsigned char tag,
 		     const unsigned char *value, size_t vlen)
 {
-	static const unsigned char month_lengths[] = { 31, 29, 31, 30, 31, 30,
+	static const unsigned char month_lengths[] = { 31, 28, 31, 30, 31, 30,
 						       31, 31, 30, 31, 30, 31 };
 	const unsigned char *p = value;
 	unsigned year, mon, day, hour, min, sec, mon_len;
@@ -516,8 +521,11 @@ int x509_decode_time(time64_t *_t,  size_t hdrlen,
 		if (vlen != 15)
 			goto unsupported_time;
 		year = DD2bin(p) * 100 + DD2bin(p);
+#ifdef MY_ABC_HERE
+#else /* MY_ABC_HERE */
 		if (year >= 1950 && year <= 2049)
 			goto invalid_time;
+#endif /* MY_ABC_HERE */
 	} else {
 		goto unsupported_time;
 	}
@@ -540,9 +548,9 @@ int x509_decode_time(time64_t *_t,  size_t hdrlen,
 		if (year % 4 == 0) {
 			mon_len = 29;
 			if (year % 100 == 0) {
-				year /= 100;
-				if (year % 4 != 0)
-					mon_len = 28;
+				mon_len = 28;
+				if (year % 400 == 0)
+					mon_len = 29;
 			}
 		}
 	}

@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  * linux/fs/ext4/page-io.c
  *
@@ -23,6 +26,7 @@
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/mm.h>
+#include <linux/backing-dev.h>
 
 #include "ext4_jbd2.h"
 #include "xattr.h"
@@ -53,9 +57,24 @@ void ext4_exit_pageio(void)
 static void buffer_io_error(struct buffer_head *bh)
 {
 	char b[BDEVNAME_SIZE];
+#ifdef MY_ABC_HERE
+	static unsigned long long b_blocknr_last = 0;
+	if (b_blocknr_last == (unsigned long long)bh->b_blocknr) {
+		printk_ratelimited(KERN_ERR "Buffer I/O error on device %s, logical block %llu\n",
+				bdevname(bh->b_bdev, b),
+				b_blocknr_last);
+	} else {
+		b_blocknr_last = (unsigned long long)bh->b_blocknr;
+		printk_ratelimited(KERN_ERR "Buffer I/O error on device %s, logical block in range %llu + 0-2(%d)\n",
+				bdevname(bh->b_bdev, b),
+				(b_blocknr_last >> CONFIG_SYNO_IO_ERROR_LIMIT_MSG_SHIFT) << CONFIG_SYNO_IO_ERROR_LIMIT_MSG_SHIFT,
+				CONFIG_SYNO_IO_ERROR_LIMIT_MSG_SHIFT);
+	}
+#else
 	printk_ratelimited(KERN_ERR "Buffer I/O error on device %s, logical block %llu\n",
 			bdevname(bh->b_bdev, b),
 			(unsigned long long)bh->b_blocknr);
+#endif /* MY_ABC_HERE */
 }
 
 static void ext4_finish_bio(struct bio *bio)
@@ -485,9 +504,20 @@ int ext4_bio_write_page(struct ext4_io_submit *io,
 
 	if (ext4_encrypted_inode(inode) && S_ISREG(inode->i_mode) &&
 	    nr_to_submit) {
-		data_page = ext4_encrypt(inode, page);
+		gfp_t gfp_flags = GFP_NOFS;
+
+	retry_encrypt:
+		data_page = ext4_encrypt(inode, page, gfp_flags);
 		if (IS_ERR(data_page)) {
 			ret = PTR_ERR(data_page);
+			if (ret == -ENOMEM && wbc->sync_mode == WB_SYNC_ALL) {
+				if (io->io_bio) {
+					ext4_io_submit(io);
+					congestion_wait(BLK_RW_ASYNC, HZ/50);
+				}
+				gfp_flags |= __GFP_NOFAIL;
+				goto retry_encrypt;
+			}
 			data_page = NULL;
 			goto out;
 		}

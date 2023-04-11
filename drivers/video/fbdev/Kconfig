@@ -134,6 +134,14 @@ config FB_SYS_IMAGEBLIT
 	  blitting. This is used by drivers that don't provide their own
 	  (accelerated) version and the framebuffer is in system RAM.
 
+config FB_PROVIDE_GET_FB_UNMAPPED_AREA
+	bool
+	depends on FB
+	default n
+	---help---
+	  Allow generic frame-buffer to provide get_fb_unmapped_area
+	  function.
+
 menuconfig FB_FOREIGN_ENDIAN
 	bool "Framebuffer foreign endianness support"
 	depends on FB
@@ -674,7 +682,6 @@ config FB_STI
 	select FB_CFB_COPYAREA
 	select FB_CFB_IMAGEBLIT
 	select STI_CONSOLE
-	select VT
 	default y
 	---help---
 	  STI refers to the HP "Standard Text Interface" which is a set of
@@ -1506,6 +1513,7 @@ config FB_SIS
 	select FB_CFB_COPYAREA
 	select FB_CFB_IMAGEBLIT
 	select FB_BOOT_VESA_SUPPORT if FB_SIS = y
+	select FB_SIS_300 if !FB_SIS_315
 	help
 	  This is the frame buffer device driver for the SiS 300, 315, 330
 	  and 340 series as well as XGI V3XT, V5, V8, Z7 graphics chipsets.
@@ -1990,16 +1998,6 @@ config FB_SH_MOBILE_LCDC
 	---help---
 	  Frame buffer driver for the on-chip SH-Mobile LCD controller.
 
-config FB_SH_MOBILE_HDMI
-	tristate "SuperH Mobile HDMI controller support"
-	depends on FB_SH_MOBILE_LCDC
-	select FB_MODE_HELPERS
-	select SOUND
-	select SND
-	select SND_SOC
-	---help---
-	  Driver for the on-chip SH-Mobile HDMI controller.
-
 config FB_TMIO
 	tristate "Toshiba Mobile IO FrameBuffer support"
 	depends on FB && (MFD_TMIO || COMPILE_TEST)
@@ -2249,7 +2247,6 @@ config XEN_FBDEV_FRONTEND
 	select FB_SYS_IMAGEBLIT
 	select FB_SYS_FOPS
 	select FB_DEFERRED_IO
-	select INPUT_XEN_KBDDEV_FRONTEND if INPUT_MISC
 	select XEN_XENBUS_FRONTEND
 	default y
 	help

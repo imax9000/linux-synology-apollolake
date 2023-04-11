@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  * Copyright (C) 2006, 2007 Eugene Konev
  *
@@ -316,7 +319,11 @@ static int cpmac_mdio_reset(struct mii_bus *bus)
 	return 0;
 }
 
+#if defined(MY_DEF_HERE)
+//do nothing
+#else /* MY_DEF_HERE */
 static int mii_irqs[PHY_MAX_ADDR] = { PHY_POLL, };
+#endif /* MY_DEF_HERE */
 
 static struct mii_bus *cpmac_mii;
 
@@ -549,7 +556,8 @@ fatal_error:
 
 static int cpmac_start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
-	int queue, len;
+	int queue;
+	unsigned int len;
 	struct cpmac_desc *desc;
 	struct cpmac_priv *priv = netdev_priv(dev);
 
@@ -559,7 +567,7 @@ static int cpmac_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	if (unlikely(skb_padto(skb, ETH_ZLEN)))
 		return NETDEV_TX_OK;
 
-	len = max(skb->len, ETH_ZLEN);
+	len = max_t(unsigned int, skb->len, ETH_ZLEN);
 	queue = skb_get_queue_mapping(skb);
 	netif_stop_subqueue(dev, queue);
 
@@ -1226,7 +1234,11 @@ int cpmac_init(void)
 	cpmac_mii->read = cpmac_mdio_read;
 	cpmac_mii->write = cpmac_mdio_write;
 	cpmac_mii->reset = cpmac_mdio_reset;
+#if defined(MY_DEF_HERE)
+//do nothing
+#else /* MY_DEF_HERE */
 	cpmac_mii->irq = mii_irqs;
+#endif /* MY_DEF_HERE */
 
 	cpmac_mii->priv = ioremap(AR7_REGS_MDIO, 256);
 
@@ -1236,7 +1248,7 @@ int cpmac_init(void)
 		goto fail_alloc;
 	}
 
-#warning FIXME: unhardcode gpio&reset bits
+	/* FIXME: unhardcode gpio&reset bits */
 	ar7_gpio_disable(26);
 	ar7_gpio_disable(27);
 	ar7_device_reset(AR7_RESET_BIT_CPMAC_LO);

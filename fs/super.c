@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  *  linux/fs/super.c
  *
@@ -118,13 +121,23 @@ static unsigned long super_cache_count(struct shrinker *shrink,
 	sb = container_of(shrink, struct super_block, s_shrink);
 
 	/*
-	 * Don't call trylock_super as it is a potential
-	 * scalability bottleneck. The counts could get updated
-	 * between super_cache_count and super_cache_scan anyway.
-	 * Call to super_cache_count with shrinker_rwsem held
-	 * ensures the safety of call to list_lru_shrink_count() and
-	 * s_op->nr_cached_objects().
+	 * We don't call trylock_super() here as it is a scalability bottleneck,
+	 * so we're exposed to partial setup state. The shrinker rwsem does not
+	 * protect filesystem operations backing list_lru_shrink_count() or
+	 * s_op->nr_cached_objects(). Counts can change between
+	 * super_cache_count and super_cache_scan, so we really don't need locks
+	 * here.
+	 *
+	 * However, if we are currently mounting the superblock, the underlying
+	 * filesystem might be in a state of partial construction and hence it
+	 * is dangerous to access it.  trylock_super() uses a MS_BORN check to
+	 * avoid this situation, so do the same here. The memory barrier is
+	 * matched with the one in mount_fs() as we don't hold locks here.
 	 */
+	if (!(sb->s_flags & MS_BORN))
+		return 0;
+	smp_rmb();
+
 	if (sb->s_op && sb->s_op->nr_cached_objects)
 		total_objects = sb->s_op->nr_cached_objects(sb, sc);
 
@@ -163,6 +176,11 @@ static void destroy_super(struct super_block *s)
 {
 	list_lru_destroy(&s->s_dentry_lru);
 	list_lru_destroy(&s->s_inode_lru);
+#ifdef MY_ABC_HERE
+#ifdef CONFIG_SMP
+	free_percpu(s->s_files);
+#endif
+#endif /* MY_ABC_HERE */
 	security_sb_free(s);
 	WARN_ON(!list_empty(&s->s_mounts));
 	kfree(s->s_subtype);
@@ -192,6 +210,17 @@ static struct super_block *alloc_super(struct file_system_type *type, int flags)
 	if (security_sb_alloc(s))
 		goto fail;
 
+#ifdef MY_ABC_HERE
+#ifdef CONFIG_SMP
+	s->s_files = alloc_percpu(struct list_head);
+	if (!s->s_files)
+		goto fail;
+	for_each_possible_cpu(i)
+		INIT_LIST_HEAD(per_cpu_ptr(s->s_files, i));
+#else
+	INIT_LIST_HEAD(&s->s_files);
+#endif
+#endif /* MY_ABC_HERE */
 	for (i = 0; i < SB_FREEZE_LEVELS; i++) {
 		if (__percpu_init_rwsem(&s->s_writers.rw_sem[i],
 					sb_writers_name[i],
@@ -240,6 +269,10 @@ static struct super_block *alloc_super(struct file_system_type *type, int flags)
 	s->s_op = &default_op;
 	s->s_time_gran = 1000000000;
 	s->cleancache_poolid = CLEANCACHE_NO_POOL;
+#ifdef MY_ABC_HERE
+	mutex_init(&s->s_archive_mutex);
+	s->s_archive_version = 0;
+#endif /* MY_ABC_HERE */
 
 	s->s_shrink.seeks = DEFAULT_SEEKS;
 	s->s_shrink.scan_objects = super_cache_scan;
@@ -415,6 +448,7 @@ void generic_shutdown_super(struct super_block *sb)
 		sb->s_flags &= ~MS_ACTIVE;
 
 		fsnotify_unmount_inodes(sb);
+		cgroup_writeback_umount();
 
 		evict_inodes(sb);
 
@@ -496,7 +530,11 @@ retry:
 	hlist_add_head(&s->s_instances, &type->fs_supers);
 	spin_unlock(&sb_lock);
 	get_filesystem(type);
-	register_shrinker(&s->s_shrink);
+	err = register_shrinker(&s->s_shrink);
+	if (err) {
+		deactivate_locked_super(s);
+		s = ERR_PTR(err);
+	}
 	return s;
 }
 
@@ -838,13 +876,21 @@ static DEFINE_SPINLOCK(unnamed_dev_lock);/* protects the above */
  */
 static int unnamed_dev_start = 1;
 
+#ifdef MY_ABC_HERE
+int get_anon_bdev_with_gfp(dev_t *p, gfp_t gfp_mask)
+#else
 int get_anon_bdev(dev_t *p)
+#endif /* MY_ABC_HERE */
 {
 	int dev;
 	int error;
 
  retry:
+#ifdef MY_ABC_HERE
+	if (ida_pre_get(&unnamed_dev_ida, gfp_mask) == 0)
+#else
 	if (ida_pre_get(&unnamed_dev_ida, GFP_ATOMIC) == 0)
+#endif /* MY_ABC_HERE */
 		return -ENOMEM;
 	spin_lock(&unnamed_dev_lock);
 	error = ida_get_new_above(&unnamed_dev_ida, unnamed_dev_start, &dev);
@@ -868,6 +914,13 @@ int get_anon_bdev(dev_t *p)
 	*p = MKDEV(0, dev & MINORMASK);
 	return 0;
 }
+#ifdef MY_ABC_HERE
+EXPORT_SYMBOL(get_anon_bdev_with_gfp);
+int get_anon_bdev(dev_t *p)
+{
+	return get_anon_bdev_with_gfp(p, GFP_ATOMIC);
+}
+#endif /* MY_ABC_HERE */
 EXPORT_SYMBOL(get_anon_bdev);
 
 void free_anon_bdev(dev_t dev)
@@ -952,7 +1005,7 @@ static int set_bdev_super(struct super_block *s, void *data)
 	 * We set the bdi here to the queue backing, file systems can
 	 * overwrite this in ->fill_super()
 	 */
-	s->s_bdi = &bdev_get_queue(s->s_bdev)->backing_dev_info;
+	s->s_bdi = bdev_get_queue(s->s_bdev)->backing_dev_info;
 	return 0;
 }
 
@@ -1016,6 +1069,10 @@ struct dentry *mount_bdev(struct file_system_type *fs_type,
 
 		s->s_mode = mode;
 		strlcpy(s->s_id, bdevname(bdev, b), sizeof(s->s_id));
+#ifdef MY_ABC_HERE
+		if (NULL != strstr(s->s_id, "synoboot"))
+			printk(KERN_NOTICE "%s: %s mounted, process=%s\n", fs_type->name, s->s_id, current->comm);
+#endif /* MY_ABC_HERE */
 		sb_set_blocksize(s, block_size(bdev));
 		error = fill_super(s, data, flags & MS_SILENT ? 1 : 0);
 		if (error) {
@@ -1128,6 +1185,14 @@ mount_fs(struct file_system_type *type, int flags, const char *name, void *data)
 	sb = root->d_sb;
 	BUG_ON(!sb);
 	WARN_ON(!sb->s_bdi);
+
+	/*
+	 * Write barrier is for super_cache_count(). We place it before setting
+	 * MS_BORN as the data dependency between the two functions is the
+	 * superblock structure contents that we just set up, not the MS_BORN
+	 * flag.
+	 */
+	smp_wmb();
 	sb->s_flags |= MS_BORN;
 
 	error = security_sb_kern_mount(sb, flags, secdata);
@@ -1325,8 +1390,8 @@ int freeze_super(struct super_block *sb)
 		}
 	}
 	/*
-	 * This is just for debugging purposes so that fs can warn if it
-	 * sees write activity when frozen is set to SB_FREEZE_COMPLETE.
+	 * For debugging purposes so that fs can warn if it sees write activity
+	 * when frozen is set to SB_FREEZE_COMPLETE, and for thaw_super().
 	 */
 	sb->s_writers.frozen = SB_FREEZE_COMPLETE;
 	up_write(&sb->s_umount);
@@ -1345,7 +1410,7 @@ int thaw_super(struct super_block *sb)
 	int error;
 
 	down_write(&sb->s_umount);
-	if (sb->s_writers.frozen == SB_UNFROZEN) {
+	if (sb->s_writers.frozen != SB_FREEZE_COMPLETE) {
 		up_write(&sb->s_umount);
 		return -EINVAL;
 	}

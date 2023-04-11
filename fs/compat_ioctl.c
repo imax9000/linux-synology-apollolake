@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  * ioctl32.c: Conversion between 32bit and 64bit native ioctls.
  *
@@ -114,6 +117,10 @@
 #ifdef CONFIG_SPARC
 #include <asm/fbio.h>
 #endif
+
+#if defined(MY_ABC_HERE) || defined(MY_DEF_HERE) || defined(MY_DEF_HERE) || defined(MY_DEF_HERE)
+#include <linux/synobios.h>
+#endif /* MY_ABC_HERE || MY_DEF_HERE || MY_DEF_HERE || defined(MY_DEF_HERE) */
 
 static int w_long(unsigned int fd, unsigned int cmd,
 		compat_ulong_t __user *argp)
@@ -811,7 +818,7 @@ static int compat_ioctl_preallocate(struct file *file,
  */
 #define XFORM(i) (((i) ^ ((i) << 27) ^ ((i) << 17)) & 0xffffffff)
 
-#define COMPATIBLE_IOCTL(cmd) XFORM(cmd),
+#define COMPATIBLE_IOCTL(cmd) XFORM((u32)cmd),
 /* ioctl should not be warned about even if it's not implemented.
    Valid reasons to use this:
    - It is implemented with ->compat_ioctl on some device, but programs
@@ -897,6 +904,17 @@ COMPATIBLE_IOCTL(FIGETBSZ)
 COMPATIBLE_IOCTL(FIFREEZE)
 COMPATIBLE_IOCTL(FITHAW)
 COMPATIBLE_IOCTL(FITRIM)
+#ifdef MY_ABC_HERE
+COMPATIBLE_IOCTL(FIGETVERSION)
+COMPATIBLE_IOCTL(FISETVERSION)
+COMPATIBLE_IOCTL(FIINCVERSION)
+COMPATIBLE_IOCTL(FISETFILEVERSION)
+#ifdef MY_ABC_HERE
+COMPATIBLE_IOCTL(FIGETBADVERSION)
+COMPATIBLE_IOCTL(FICLEARBADVERSION)
+COMPATIBLE_IOCTL(FISETBADVERSION)
+#endif /* MY_ABC_HERE */
+#endif /* MY_ABC_HERE */
 COMPATIBLE_IOCTL(KDGETKEYCODE)
 COMPATIBLE_IOCTL(KDSETKEYCODE)
 COMPATIBLE_IOCTL(KDGKBTYPE)
@@ -1388,6 +1406,23 @@ COMPATIBLE_IOCTL(JSIOCGAXES)
 COMPATIBLE_IOCTL(JSIOCGBUTTONS)
 COMPATIBLE_IOCTL(JSIOCGNAME(0))
 
+#ifdef MY_ABC_HERE
+COMPATIBLE_IOCTL(SYNOIO_GET_EUNIT_TYPE)
+#endif /* MY_ABC_HERE */
+#ifdef MY_ABC_HERE
+COMPATIBLE_IOCTL(GET_SYNC_STATUS)
+COMPATIBLE_IOCTL(GET_ARRAY_STATUS)
+#endif /* MY_ABC_HERE */
+
+#ifdef MY_ABC_HERE
+COMPATIBLE_IOCTL(SD_IOCTL_IDLE)
+COMPATIBLE_IOCTL(SD_IOCTL_SUPPORT_SLEEP)
+#endif /* MY_ABC_HERE */
+
+#ifdef MY_ABC_HERE
+COMPATIBLE_IOCTL(SCSI_IOCTL_SET_BADSECTORS)
+#endif /* MY_ABC_HERE */
+
 #ifdef TIOCGLTC
 COMPATIBLE_IOCTL(TIOCGLTC)
 COMPATIBLE_IOCTL(TIOCSLTC)
@@ -1566,6 +1601,17 @@ COMPAT_SYSCALL_DEFINE3(ioctl, unsigned int, fd, unsigned int, cmd,
 	case FIONBIO:
 	case FIOASYNC:
 	case FIOQSIZE:
+#ifdef MY_ABC_HERE
+	case FIGETVERSION:
+	case FISETVERSION:
+	case FIINCVERSION:
+	case FISETFILEVERSION:
+#ifdef MY_ABC_HERE
+	case FIGETBADVERSION:
+	case FICLEARBADVERSION:
+	case FISETBADVERSION:
+#endif /* MY_ABC_HERE */
+#endif /* MY_ABC_HERE */
 		break;
 
 #if defined(CONFIG_IA64) || defined(CONFIG_X86_64)
@@ -1579,6 +1625,10 @@ COMPAT_SYSCALL_DEFINE3(ioctl, unsigned int, fd, unsigned int, cmd,
 		error = ioctl_preallocate(f.file, compat_ptr(arg));
 		goto out_fput;
 #endif
+
+	case FICLONE:
+	case FICLONERANGE:
+		goto do_ioctl;
 
 	case FIBMAP:
 	case FIGETBSZ:

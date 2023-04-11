@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 #ifndef _SCSI_DISK_H
 #define _SCSI_DISK_H
 
@@ -11,7 +14,12 @@
 /*
  * Time out in seconds for disks and Magneto-opticals (which are slower).
  */
+#if defined(MY_ABC_HERE)
+#define SD_TIMEOUT		(60 * HZ)
+#else /* MY_ABC_HERE */
 #define SD_TIMEOUT		(30 * HZ)
+#endif /* MY_ABC_HERE */
+
 #define SD_MOD_TIMEOUT		(75 * HZ)
 /*
  * Flush timeout is a multiplier over the standard device timeout which is
@@ -25,7 +33,11 @@
  */
 #define SD_MAX_RETRIES		5
 #define SD_PASSTHROUGH_RETRIES	1
+#ifdef MY_DEF_HERE
+#define SD_MAX_MEDIUM_TIMEOUTS 1024
+#else
 #define SD_MAX_MEDIUM_TIMEOUTS	2
+#endif /* MY_DEF_HERE */
 
 /*
  * Size of the initial data buffer for mode and read capacity data
@@ -59,13 +71,34 @@ enum {
 	SD_LBP_DISABLE,		/* Discard disabled due to failed cmd */
 };
 
+#if defined(MY_ABC_HERE) || defined(MY_DEF_HERE)
+typedef enum __syno_disk_type {
+	SYNO_DISK_UNKNOWN = 0,
+	SYNO_DISK_SATA,
+	SYNO_DISK_USB,
+	SYNO_DISK_SYNOBOOT,
+	SYNO_DISK_ISCSI,
+	SYNO_DISK_SAS,
+#ifdef MY_DEF_HERE
+	SYNO_DISK_CACHE, /* only for nvc */
+#endif /* MY_DEF_HERE */
+#ifdef MY_DEF_HERE
+	SYNO_DISK_SYSTEM, /* only for system partition */
+#endif /* MY_DEF_HERE */
+#ifdef MY_DEF_HERE
+	SYNO_DISK_OOB,
+#endif /* MY_DEF_HERE */
+	SYNO_DISK_END, // end of enum
+} SYNO_DISK_TYPE;
+#endif /* MY_ABC_HERE */
+
 struct scsi_disk {
 	struct scsi_driver *driver;	/* always &sd_template */
 	struct scsi_device *device;
 	struct device	dev;
 	struct gendisk	*disk;
 	atomic_t	openers;
-	sector_t	capacity;	/* size in 512-byte sectors */
+	sector_t	capacity;	/* size in logical blocks */
 	u32		max_xfer_blocks;
 	u32		opt_xfer_blocks;
 	u32		max_ws_blocks;
@@ -73,6 +106,12 @@ struct scsi_disk {
 	u32		unmap_granularity;
 	u32		unmap_alignment;
 	u32		index;
+#if defined(MY_ABC_HERE) || defined(MY_DEF_HERE)
+	SYNO_DISK_TYPE	synodisktype;
+#endif /* MY_ABC_HERE */
+#if defined(MY_DEF_HERE) || defined(MY_DEF_HERE) || defined(MY_DEF_HERE)
+	u32		synoindex;
+#endif /* MY_DEF_HERE || MY_DEF_HERE || MY_DEF_HERE */
 	unsigned int	physical_block_size;
 	unsigned int	max_medium_access_timeouts;
 	unsigned int	medium_access_timed_out;
@@ -144,6 +183,16 @@ static inline int scsi_medium_access_command(struct scsi_cmnd *scmd)
 	}
 
 	return 0;
+}
+
+static inline sector_t logical_to_sectors(struct scsi_device *sdev, sector_t blocks)
+{
+	return blocks << (ilog2(sdev->sector_size) - 9);
+}
+
+static inline unsigned int logical_to_bytes(struct scsi_device *sdev, sector_t blocks)
+{
+	return blocks * sdev->sector_size;
 }
 
 /*

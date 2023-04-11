@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  *  linux/fs/isofs/inode.c
  *
@@ -340,6 +343,9 @@ static int parse_options(char *options, struct iso9660_options *popt)
 {
 	char *p;
 	int option;
+#ifdef MY_ABC_HERE
+	unsigned long ulOption;
+#endif
 
 	popt->map = 'n';
 	popt->rock = 1;
@@ -428,17 +434,29 @@ static int parse_options(char *options, struct iso9660_options *popt)
 		case Opt_ignore:
 			break;
 		case Opt_uid:
+#ifdef MY_ABC_HERE
+			if (SYNO_get_option_ul(&args[0], &ulOption))
+				return 0;
+			popt->uid = make_kuid(current_user_ns(), ulOption);
+#else
 			if (match_int(&args[0], &option))
 				return 0;
 			popt->uid = make_kuid(current_user_ns(), option);
+#endif /* MY_ABC_HERE */
 			if (!uid_valid(popt->uid))
 				return 0;
 			popt->uid_set = 1;
 			break;
 		case Opt_gid:
+#ifdef MY_ABC_HERE
+			if (SYNO_get_option_ul(&args[0], &ulOption))
+				return 0;
+			popt->gid = make_kgid(current_user_ns(), ulOption);
+#else
 			if (match_int(&args[0], &option))
 				return 0;
 			popt->gid = make_kgid(current_user_ns(), option);
+#endif /* MY_ABC_HERE */
 			if (!gid_valid(popt->gid))
 				return 0;
 			popt->gid_set = 1;
@@ -690,6 +708,11 @@ static int isofs_fill_super(struct super_block *s, void *data, int silent)
 	pri_bh = NULL;
 
 root_found:
+	/* We don't support read-write mounts */
+	if (!(s->s_flags & MS_RDONLY)) {
+		error = -EACCES;
+		goto out_freebh;
+	}
 
 	if (joliet_level && (pri == NULL || !opt.rock)) {
 		/* This is the case of Joliet with the norock mount flag.
@@ -1503,9 +1526,6 @@ struct inode *__isofs_iget(struct super_block *sb,
 static struct dentry *isofs_mount(struct file_system_type *fs_type,
 	int flags, const char *dev_name, void *data)
 {
-	/* We don't support read-write mounts */
-	if (!(flags & MS_RDONLY))
-		return ERR_PTR(-EACCES);
 	return mount_bdev(fs_type, flags, dev_name, data, isofs_fill_super);
 }
 

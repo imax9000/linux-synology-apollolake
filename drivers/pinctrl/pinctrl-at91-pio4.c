@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  * Driver for the Atmel PIO4 controller
  *
@@ -290,7 +293,11 @@ static void atmel_gpio_irq_handler(struct irq_desc *desc)
 
 static int atmel_gpio_direction_input(struct gpio_chip *chip, unsigned offset)
 {
+#if defined(MY_DEF_HERE)
+	struct atmel_pioctrl *atmel_pioctrl = dev_get_drvdata(chip->parent);
+#else /* MY_DEF_HERE */
 	struct atmel_pioctrl *atmel_pioctrl = dev_get_drvdata(chip->dev);
+#endif /* MY_DEF_HERE */
 	struct atmel_pin *pin = atmel_pioctrl->pins[offset];
 	unsigned reg;
 
@@ -305,7 +312,11 @@ static int atmel_gpio_direction_input(struct gpio_chip *chip, unsigned offset)
 
 static int atmel_gpio_get(struct gpio_chip *chip, unsigned offset)
 {
+#if defined(MY_DEF_HERE)
+	struct atmel_pioctrl *atmel_pioctrl = dev_get_drvdata(chip->parent);
+#else /* MY_DEF_HERE */
 	struct atmel_pioctrl *atmel_pioctrl = dev_get_drvdata(chip->dev);
+#endif /* MY_DEF_HERE */
 	struct atmel_pin *pin = atmel_pioctrl->pins[offset];
 	unsigned reg;
 
@@ -317,7 +328,11 @@ static int atmel_gpio_get(struct gpio_chip *chip, unsigned offset)
 static int atmel_gpio_direction_output(struct gpio_chip *chip, unsigned offset,
 				       int value)
 {
+#if defined(MY_DEF_HERE)
+	struct atmel_pioctrl *atmel_pioctrl = dev_get_drvdata(chip->parent);
+#else /* MY_DEF_HERE */
 	struct atmel_pioctrl *atmel_pioctrl = dev_get_drvdata(chip->dev);
+#endif /* MY_DEF_HERE */
 	struct atmel_pin *pin = atmel_pioctrl->pins[offset];
 	unsigned reg;
 
@@ -336,7 +351,11 @@ static int atmel_gpio_direction_output(struct gpio_chip *chip, unsigned offset,
 
 static void atmel_gpio_set(struct gpio_chip *chip, unsigned offset, int val)
 {
+#if defined(MY_DEF_HERE)
+	struct atmel_pioctrl *atmel_pioctrl = dev_get_drvdata(chip->parent);
+#else /* MY_DEF_HERE */
 	struct atmel_pioctrl *atmel_pioctrl = dev_get_drvdata(chip->dev);
+#endif /* MY_DEF_HERE */
 	struct atmel_pin *pin = atmel_pioctrl->pins[offset];
 
 	atmel_gpio_write(atmel_pioctrl, pin->bank,
@@ -346,7 +365,11 @@ static void atmel_gpio_set(struct gpio_chip *chip, unsigned offset, int val)
 
 static int atmel_gpio_to_irq(struct gpio_chip *chip, unsigned offset)
 {
+#if defined(MY_DEF_HERE)
+	struct atmel_pioctrl *atmel_pioctrl = dev_get_drvdata(chip->parent);
+#else /* MY_DEF_HERE */
 	struct atmel_pioctrl *atmel_pioctrl = dev_get_drvdata(chip->dev);
+#endif /* MY_DEF_HERE */
 
 	return irq_find_mapping(atmel_pioctrl->irq_domain, offset);
 }
@@ -568,8 +591,10 @@ static int atmel_pctl_dt_node_to_map(struct pinctrl_dev *pctldev,
 		for_each_child_of_node(np_config, np) {
 			ret = atmel_pctl_dt_subnode_to_map(pctldev, np, map,
 						    &reserved_maps, num_maps);
-			if (ret < 0)
+			if (ret < 0) {
+				of_node_put(np);
 				break;
+			}
 		}
 	}
 
@@ -717,9 +742,11 @@ static int atmel_conf_pin_config_group_set(struct pinctrl_dev *pctldev,
 			break;
 		case PIN_CONFIG_BIAS_PULL_UP:
 			conf |= ATMEL_PIO_PUEN_MASK;
+			conf &= (~ATMEL_PIO_PDEN_MASK);
 			break;
 		case PIN_CONFIG_BIAS_PULL_DOWN:
 			conf |= ATMEL_PIO_PDEN_MASK;
+			conf &= (~ATMEL_PIO_PUEN_MASK);
 			break;
 		case PIN_CONFIG_DRIVE_OPEN_DRAIN:
 			if (arg == 0)
@@ -969,7 +996,11 @@ static int atmel_pinctrl_probe(struct platform_device *pdev)
 	atmel_pioctrl->gpio_chip->of_node = dev->of_node;
 	atmel_pioctrl->gpio_chip->ngpio = atmel_pioctrl->npins;
 	atmel_pioctrl->gpio_chip->label = dev_name(dev);
+#if defined(MY_DEF_HERE)
+	atmel_pioctrl->gpio_chip->parent = dev;
+#else /* MY_DEF_HERE */
 	atmel_pioctrl->gpio_chip->dev = dev;
+#endif /* MY_DEF_HERE */
 	atmel_pioctrl->gpio_chip->names = atmel_pioctrl->group_names;
 
 	atmel_pioctrl->pm_wakeup_sources = devm_kzalloc(dev,
@@ -1000,7 +1031,7 @@ static int atmel_pinctrl_probe(struct platform_device *pdev)
 		atmel_pioctrl->irqs[i] = res->start;
 		irq_set_chained_handler(res->start, atmel_gpio_irq_handler);
 		irq_set_handler_data(res->start, atmel_pioctrl);
-		dev_dbg(dev, "bank %i: hwirq=%u\n", i, res->start);
+		dev_dbg(dev, "bank %i: irq=%pr\n", i, res);
 	}
 
 	atmel_pioctrl->irq_domain = irq_domain_add_linear(dev->of_node,

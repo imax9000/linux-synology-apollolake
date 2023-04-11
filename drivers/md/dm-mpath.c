@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  * Copyright (C) 2003 Sistina Software Limited.
  * Copyright (C) 2004-2005 Red Hat, Inc. All rights reserved.
@@ -938,6 +941,10 @@ static void multipath_dtr(struct dm_target *ti)
 	free_multipath(m);
 }
 
+#ifdef MY_DEF_HERE
+extern char* SynoDmGetDiskNameFromMd(struct mapped_device *md);
+extern struct mapped_device* SynoGetMdFromDmTarget(struct dm_target *ti);
+#endif
 /*
  * Take a path out of use.
  */
@@ -951,7 +958,16 @@ static int fail_path(struct pgpath *pgpath)
 	if (!pgpath->is_active)
 		goto out;
 
+#ifdef MY_DEF_HERE
+	if (pgpath->path.dev->bdev && pgpath->path.dev->bdev->bd_disk) {
+		DMWARN("[%s] Failing path %s %s.", SynoDmGetDiskNameFromMd(SynoGetMdFromDmTarget(m->ti)), pgpath->path.dev->name,
+			pgpath->path.dev->bdev->bd_disk->disk_name);
+	} else {
+		DMWARN("Failing path %s.", pgpath->path.dev->name);
+	}
+#else
 	DMWARN("Failing path %s.", pgpath->path.dev->name);
+#endif
 
 	pgpath->pg->ps.type->fail_path(&pgpath->pg->ps, &pgpath->path);
 	pgpath->is_active = 0;
@@ -1220,10 +1236,10 @@ static void activate_path(struct work_struct *work)
 {
 	struct pgpath *pgpath =
 		container_of(work, struct pgpath, activate_path.work);
+	struct request_queue *q = bdev_get_queue(pgpath->path.dev->bdev);
 
-	if (pgpath->is_active)
-		scsi_dh_activate(bdev_get_queue(pgpath->path.dev->bdev),
-				 pg_init_done, pgpath);
+	if (pgpath->is_active && !blk_queue_dying(q))
+		scsi_dh_activate(q, pg_init_done, pgpath);
 	else
 		pg_init_done(pgpath, SCSI_DH_DEV_OFFLINED);
 }

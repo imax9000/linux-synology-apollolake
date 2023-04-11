@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  * Atmel PIO2 Port Multiplexer support
  *
@@ -397,7 +400,11 @@ static int __init pio_probe(struct platform_device *pdev)
 	pio->chip.label = pio->name;
 	pio->chip.base = pdev->id * 32;
 	pio->chip.ngpio = 32;
+#if defined(MY_DEF_HERE)
+	pio->chip.parent = &pdev->dev;
+#else /* MY_DEF_HERE */
 	pio->chip.dev = &pdev->dev;
+#endif /* MY_DEF_HERE */
 	pio->chip.owner = THIS_MODULE;
 
 	pio->chip.direction_input = direction_input;
@@ -435,7 +442,7 @@ void __init at32_init_pio(struct platform_device *pdev)
 	struct resource *regs;
 	struct pio_device *pio;
 
-	if (pdev->id > MAX_NR_PIO_DEVICES) {
+	if (pdev->id >= MAX_NR_PIO_DEVICES) {
 		dev_err(&pdev->dev, "only %d PIO devices supported\n",
 			MAX_NR_PIO_DEVICES);
 		return;

@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /* Driver for USB Mass Storage compliant devices
  * SCSI layer glue code
  *
@@ -133,6 +136,14 @@ static int slave_configure(struct scsi_device *sdev)
 		 * let the queue segment size sort out the real limit.
 		 */
 		blk_queue_max_hw_sectors(sdev->request_queue, 0x7FFFFF);
+#if defined(CONFIG_SYNO_LSP_RTD1619)
+	} else if (us->pusb_dev->speed >= USB_SPEED_SUPER) {
+		/*
+		 * USB3 devices will be limited to 2048 sectors. This gives us
+		 * better throughput on most devices.
+		 */
+		blk_queue_max_hw_sectors(sdev->request_queue, 2048);
+#endif /* CONFIG_SYNO_LSP_RTD1619 */
 	}
 
 	/* Some USB host controllers can't do DMA; they have to use PIO.
@@ -223,8 +234,12 @@ static int slave_configure(struct scsi_device *sdev)
 		if (!(us->fflags & US_FL_NEEDS_CAP16))
 			sdev->try_rc_10_first = 1;
 
-		/* assume SPC3 or latter devices support sense size > 18 */
-		if (sdev->scsi_level > SCSI_SPC_2)
+		/*
+		 * assume SPC3 or latter devices support sense size > 18
+		 * unless US_FL_BAD_SENSE quirk is specified.
+		 */
+		if (sdev->scsi_level > SCSI_SPC_2 &&
+		    !(us->fflags & US_FL_BAD_SENSE))
 			us->fflags |= US_FL_SANE_SENSE;
 
 		/* USB-IDE bridges tend to report SK = 0x04 (Non-recoverable
@@ -337,6 +352,15 @@ static int queuecommand_lck(struct scsi_cmnd *srb,
 	if (test_bit(US_FLIDX_DISCONNECTING, &us->dflags)) {
 		usb_stor_dbg(us, "Fail command during disconnect\n");
 		srb->result = DID_NO_CONNECT << 16;
+		done(srb);
+		return 0;
+	}
+
+	if ((us->fflags & US_FL_NO_ATA_1X) &&
+			(srb->cmnd[0] == ATA_12 || srb->cmnd[0] == ATA_16)) {
+		memcpy(srb->sense_buffer, usb_stor_sense_invalidCDB,
+		       sizeof(usb_stor_sense_invalidCDB));
+		srb->result = SAM_STAT_CHECK_CONDITION;
 		done(srb);
 		return 0;
 	}
@@ -525,10 +549,31 @@ static ssize_t max_sectors_store(struct device *dev, struct device_attribute *at
 	}
 	return -EINVAL;
 }
+
+#ifdef MY_ABC_HERE
+extern int blIsCardReader(struct usb_device *usbdev);
+static ssize_t show_syno_cardreader(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct scsi_device *sdp = to_scsi_device(dev);
+	struct us_data *us = host_to_us(sdp->host);
+	struct usb_device *usbdev = us->pusb_dev;
+
+	if (blIsCardReader(usbdev)) {
+		return sprintf(buf, "1");
+	} else {
+		return sprintf(buf, "0");
+	}
+}
+static DEVICE_ATTR(syno_cardreader, S_IRUGO, show_syno_cardreader, NULL);
+#endif /* MY_ABC_HERE */
 static DEVICE_ATTR_RW(max_sectors);
 
 static struct device_attribute *sysfs_device_attr_list[] = {
 	&dev_attr_max_sectors,
+#ifdef MY_ABC_HERE
+	&dev_attr_syno_cardreader,
+#endif /* MY_ABC_HERE */
 	NULL,
 };
 
@@ -582,6 +627,10 @@ static const struct scsi_host_template usb_stor_host_template = {
 
 	/* sysfs device attributes */
 	.sdev_attrs =			sysfs_device_attr_list,
+
+#if defined(MY_ABC_HERE) || defined(MY_DEF_HERE)
+	.syno_port_type         = SYNO_PORT_TYPE_USB,
+#endif /* MY_ABC_HERE */
 
 	/* module management */
 	.module =			THIS_MODULE

@@ -641,7 +641,7 @@ static int ll_send_mgc_param(struct obd_export *mgc, char *string)
 	if (!msp)
 		return -ENOMEM;
 
-	strncpy(msp->mgs_param, string, MGS_PARAM_MAXLEN);
+	strlcpy(msp->mgs_param, string, sizeof(msp->mgs_param));
 	rc = obd_set_info_async(NULL, mgc, sizeof(KEY_SET_INFO), KEY_SET_INFO,
 				sizeof(struct mgs_send_param), msp, NULL);
 	if (rc)
@@ -1863,7 +1863,7 @@ static loff_t ll_dir_seek(struct file *file, loff_t offset, int origin)
 	int api32 = ll_need_32bit_api(sbi);
 	loff_t ret = -EINVAL;
 
-	mutex_lock(&inode->i_mutex);
+	inode_lock(inode);
 	switch (origin) {
 	case SEEK_SET:
 		break;
@@ -1901,7 +1901,7 @@ static loff_t ll_dir_seek(struct file *file, loff_t offset, int origin)
 	goto out;
 
 out:
-	mutex_unlock(&inode->i_mutex);
+	inode_unlock(inode);
 	return ret;
 }
 

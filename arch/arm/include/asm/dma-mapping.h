@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 #ifndef ASMARM_DMA_MAPPING_H
 #define ASMARM_DMA_MAPPING_H
 
@@ -119,7 +122,7 @@ static inline dma_addr_t virt_to_dma(struct device *dev, void *addr)
 /* The ARM override for dma_max_pfn() */
 static inline unsigned long dma_max_pfn(struct device *dev)
 {
-	return PHYS_PFN_OFFSET + dma_to_pfn(dev, *dev->dma_mask);
+	return dma_to_pfn(dev, *dev->dma_mask);
 }
 #define dma_max_pfn(dev) dma_max_pfn(dev)
 
@@ -185,6 +188,11 @@ extern int arm_dma_set_mask(struct device *dev, u64 dma_mask);
 extern void *arm_dma_alloc(struct device *dev, size_t size, dma_addr_t *handle,
 			   gfp_t gfp, struct dma_attrs *attrs);
 
+#if defined(MY_DEF_HERE)
+extern void *arm_coherent_dma_alloc(struct device *dev, size_t size,
+				    dma_addr_t *handle, gfp_t gfp, struct dma_attrs *attrs);
+#endif /* MY_DEF_HERE */
+
 /**
  * arm_dma_free - free memory allocated by arm_dma_alloc
  * @dev: valid struct device pointer, or NULL for ISA and EISA-like devices
@@ -201,6 +209,11 @@ extern void *arm_dma_alloc(struct device *dev, size_t size, dma_addr_t *handle,
  */
 extern void arm_dma_free(struct device *dev, size_t size, void *cpu_addr,
 			 dma_addr_t handle, struct dma_attrs *attrs);
+
+#if defined(MY_DEF_HERE)
+extern void arm_coherent_dma_free(struct device *dev, size_t size, void *cpu_addr,
+				  dma_addr_t handle, struct dma_attrs *attrs);
+#endif /* MY_DEF_HERE */
 
 /**
  * arm_dma_mmap - map a coherent DMA allocation into user space

@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  * Functions related to setting various queue properties from drivers
  */
@@ -91,8 +94,8 @@ void blk_set_default_limits(struct queue_limits *lim)
 	lim->seg_boundary_mask = BLK_SEG_BOUNDARY_MASK;
 	lim->virt_boundary_mask = 0;
 	lim->max_segment_size = BLK_MAX_SEGMENT_SIZE;
-	lim->max_sectors = lim->max_dev_sectors = lim->max_hw_sectors =
-		BLK_SAFE_MAX_SECTORS;
+	lim->max_sectors = lim->max_hw_sectors = BLK_SAFE_MAX_SECTORS;
+	lim->max_dev_sectors = 0;
 	lim->chunk_sectors = 0;
 	lim->max_write_same_sectors = 0;
 	lim->max_discard_sectors = 0;
@@ -339,6 +342,24 @@ void blk_queue_max_segment_size(struct request_queue *q, unsigned int max_size)
 }
 EXPORT_SYMBOL(blk_queue_max_segment_size);
 
+#ifdef MY_ABC_HERE
+/*
+ * Export this function for device mapper layer
+ * to set logical block size via limits
+ */
+void syno_limits_logical_block_size(struct queue_limits *limits, unsigned short size)
+{
+	limits->logical_block_size = size;
+
+	if (limits->physical_block_size < size)
+		limits->physical_block_size = size;
+
+	if (limits->io_min < limits->physical_block_size)
+		limits->io_min = limits->physical_block_size;
+}
+EXPORT_SYMBOL(syno_limits_logical_block_size);
+#endif /* MY_ABC_HERE */
+
 /**
  * blk_queue_logical_block_size - set logical block size for the queue
  * @q:  the request queue for the device
@@ -351,6 +372,9 @@ EXPORT_SYMBOL(blk_queue_max_segment_size);
  **/
 void blk_queue_logical_block_size(struct request_queue *q, unsigned short size)
 {
+#ifdef MY_ABC_HERE
+	syno_limits_logical_block_size(&q->limits, size);
+#else
 	q->limits.logical_block_size = size;
 
 	if (q->limits.physical_block_size < size)
@@ -358,6 +382,7 @@ void blk_queue_logical_block_size(struct request_queue *q, unsigned short size)
 
 	if (q->limits.io_min < q->limits.physical_block_size)
 		q->limits.io_min = q->limits.physical_block_size;
+#endif /* MY_ABC_HERE */
 }
 EXPORT_SYMBOL(blk_queue_logical_block_size);
 

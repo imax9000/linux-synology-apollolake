@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  * Low-level CPU initialisation
  * Based on arch/arm/kernel/head.S
@@ -30,6 +33,7 @@
 #include <asm/cache.h>
 #include <asm/cputype.h>
 #include <asm/kernel-pgtable.h>
+#include <asm/kvm_arm.h>
 #include <asm/memory.h>
 #include <asm/pgtable-hwdef.h>
 #include <asm/pgtable.h>
@@ -40,13 +44,33 @@
 
 #define __PHYS_OFFSET	(KERNEL_START - TEXT_OFFSET)
 
+#ifdef MY_DEF_HERE
+
+#if (TEXT_OFFSET & 0xfff) != 0
+#error TEXT_OFFSET must be at least 4KB aligned
+#elif (PAGE_OFFSET & 0x1fffff) != 0
+#error PAGE_OFFSET must be at least 2MB aligned
+#endif
+
+#else /* MY_DEF_HERE */
+
 #if (TEXT_OFFSET & 0xfff) != 0
 #error TEXT_OFFSET must be at least 4KB aligned
 #elif (PAGE_OFFSET & 0x1fffff) != 0
 #error PAGE_OFFSET must be at least 2MB aligned
 #elif TEXT_OFFSET > 0x1fffff
+#if defined(CONFIG_RTK_PLATFORM) && defined(CONFIG_SYNO_LSP_RTD1619)
+#else /* CONFIG_RTK_PLATFORM && CONFIG_SYNO_LSP_RTD1619 */
 #error TEXT_OFFSET must be less than 2MB
+#endif /* CONFIG_RTK_PLATFORM && CONFIG_SYNO_LSP_RTD1619 */
 #endif
+
+#if defined(CONFIG_SYNO_LSP_RTD1619)
+#ifdef CONFIG_RTK_PLATFORM_FPGA
+#define DTB_ADDR 0x02100000
+#endif /* CONFIG_RTK_PLATFORM_FPGA */
+#endif /* CONFIG_SYNO_LSP_RTD1619 */
+#endif /* MY_DEF_HERE */
 
 #define KERNEL_START	_text
 #define KERNEL_END	_end
@@ -446,6 +470,7 @@ ENDPROC(__mmap_switched)
  * booted in EL1 or EL2 respectively.
  */
 ENTRY(el2_setup)
+	msr	SPsel, #1			// We want to use SP_EL{1,2}
 	mrs	x0, CurrentEL
 	cmp	x0, #CurrentEL_EL2
 	b.ne	1f
@@ -463,7 +488,7 @@ CPU_LE(	bic	x0, x0, #(3 << 24)	)	// Clear the EE and E0E bits for EL1
 	ret
 
 	/* Hyp configuration. */
-2:	mov	x0, #(1 << 31)			// 64-bit EL1
+2:	mov_q	x0, HCR_HOST_NVHE_FLAGS
 	msr	hcr_el2, x0
 
 	/* Generic timers. */
@@ -476,8 +501,7 @@ CPU_LE(	bic	x0, x0, #(3 << 24)	)	// Clear the EE and E0E bits for EL1
 	/* GICv3 system register access */
 	mrs	x0, id_aa64pfr0_el1
 	ubfx	x0, x0, #24, #4
-	cmp	x0, #1
-	b.ne	3f
+	cbz	x0, 3f
 
 	mrs_s	x0, ICC_SRE_EL2
 	orr	x0, x0, #ICC_SRE_EL2_SRE	// Set ICC_SRE_EL2.SRE==1
@@ -512,9 +536,15 @@ CPU_LE(	movk	x0, #0x30d0, lsl #16	)	// Clear EE and E0E on LE systems
 #endif
 
 	/* EL2 debug */
+	mrs	x0, id_aa64dfr0_el1		// Check ID_AA64DFR0_EL1 PMUVer
+	sbfx	x0, x0, #8, #4
+	cmp	x0, #1
+	b.lt	4f				// Skip if no PMU present
 	mrs	x0, pmcr_el0			// Disable debug access traps
 	ubfx	x0, x0, #11, #5			// to EL2 and allow access to
-	msr	mdcr_el2, x0			// all PMU counters from EL1
+4:
+	csel	x0, xzr, x0, lt			// all PMU counters from EL1
+	msr	mdcr_el2, x0			// (if they exist)
 
 	/* Stage-2 translation */
 	msr	vttbr_el2, xzr
@@ -561,18 +591,76 @@ ENTRY(__boot_cpu_mode)
 	.long	BOOT_CPU_MODE_EL2
 	.long	BOOT_CPU_MODE_EL1
 	.popsection
+#ifdef MY_DEF_HERE
+.macro  switch_el, xreg, el3_label, el2_label, el1_label
+	mrs     \xreg, CurrentEL
+	cmp     \xreg, 0xc
+	b.eq    \el3_label
+	cmp     \xreg, 0x8
+	b.eq    \el2_label
+	cmp     \xreg, 0x4
+	b.eq    \el1_label
+.endm
 
+.macro armv8_switch_to_el2_m, xreg1
+	/* 64bit EL2 | HCE | SMD | RES1 (Bits[5:4]) | Non-secure EL0/EL1 */
+	mov     \xreg1, #0x5b1
+	msr     scr_el3, \xreg1
+	msr     cptr_el3, xzr           /* Disable coprocessor traps to EL3 */
+	mov     \xreg1, #0x33ff
+	msr     cptr_el2, \xreg1        /* Disable coprocessor traps to EL2 */
+
+	/* Initialize Generic Timers */
+	msr     cntvoff_el2, xzr
+
+	/* Initialize SCTLR_EL2
+	 *
+	 * setting RES1 bits (29,28,23,22,18,16,11,5,4) to 1
+	 * and RES0 bits (31,30,27,26,24,21,20,17,15-13,10-6) +
+	 * EE,WXN,I,SA,C,A,M to 0
+	 */
+	mov     \xreg1, #0x0830
+	movk    \xreg1, #0x30C5, lsl #16
+	msr     sctlr_el2, \xreg1
+
+	/* Return to the EL2_SP2 mode from EL3 */
+	mov     \xreg1, sp
+	msr     sp_el2, \xreg1          /* Migrate SP */
+	mrs     \xreg1, vbar_el3
+	msr     vbar_el2, \xreg1        /* Migrate VBAR */
+	mov     \xreg1, #0x3c9
+	msr     spsr_el3, \xreg1        /* EL2_SP2 | D | A | I | F */
+	msr     elr_el3, lr
+	eret
+.endm
+
+ENTRY(armv8_switch_to_el2)
+	switch_el x0, 1f, 0f, 0f
+0:	ret
+1:	armv8_switch_to_el2_m x0
+ENDPROC(armv8_switch_to_el2)
+#endif /* MY_DEF_HERE */
 	/*
 	 * This provides a "holding pen" for platforms to hold all secondary
 	 * cores are held until we're ready for them to initialise.
 	 */
 ENTRY(secondary_holding_pen)
+#ifdef MY_DEF_HERE
+	bl	armv8_switch_to_el2
+#endif /* MY_DEF_HERE */
 	bl	el2_setup			// Drop to EL1, w20=cpu_boot_mode
 	bl	set_cpu_boot_mode_flag
 	mrs	x0, mpidr_el1
 	ldr     x1, =MPIDR_HWID_BITMASK
 	and	x0, x0, x1
+#if defined(CONFIG_ARCH_RTD129X) && defined(MY_DEF_HERE) || \
+	defined(CONFIG_RTK_PLATFORM) && defined(CONFIG_SYNO_LSP_RTD1619)
+	adr_l	x3, rtk_secondary_holding_pen_release
+#else /* CONFIG_ARCH_RTD129X && MY_DEF_HERE ||
+		 CONFIG_RTK_PLATFORM && CONFIG_SYNO_LSP_RTD1619 */
 	adr_l	x3, secondary_holding_pen_release
+#endif /* CONFIG_ARCH_RTD129X && MY_DEF_HERE ||
+		  CONFIG_RTK_PLATFORM && CONFIG_SYNO_LSP_RTD1619 */
 pen:	ldr	x4, [x3]
 	cmp	x4, x0
 	b.eq	secondary_startup

@@ -52,6 +52,15 @@ struct gic_chip_data {
 
 static struct gic_chip_data gic_data __read_mostly;
 static struct static_key supports_deactivate = STATIC_KEY_INIT_TRUE;
+#if defined(CONFIG_SYNO_LSP_RTD1619)
+#ifdef CONFIG_RTK_PLATFORM
+static unsigned int GICR_ISENABLER0_REG = 0;
+static unsigned int GIC_ISENABLER0_REG = 0;
+static unsigned int GIC_ISENABLER1_REG = 0;
+static unsigned int GIC_ISENABLER2_REG = 0;
+static unsigned int GIC_ISENABLER3_REG = 0;
+#endif /* CONFIG_RTK_PLATFORM */
+#endif /* CONFIG_SYNO_LSP_RTD1619 */
 
 #define gic_data_rdist()		(this_cpu_ptr(gic_data.rdists.rdist))
 #define gic_data_rdist_rd_base()	(gic_data_rdist()->rd_base)
@@ -142,7 +151,7 @@ static void gic_enable_redist(bool enable)
 			return;	/* No PM support in this redistributor */
 	}
 
-	while (count--) {
+	while (--count) {
 		val = readl_relaxed(rbase + GICR_WAKER);
 		if (enable ^ (val & GICR_WAKER_ChildrenAsleep))
 			break;
@@ -361,6 +370,13 @@ static asmlinkage void __exception_irq_entry gic_handle_irq(struct pt_regs *regs
 			if (static_key_true(&supports_deactivate))
 				gic_write_dir(irqnr);
 #ifdef CONFIG_SMP
+			/*
+			 * Unlike GICv2, we don't need an smp_rmb() here.
+			 * The control dependency from gic_read_iar to
+			 * the ISB in gic_write_eoir is enough to ensure
+			 * that any shared data read by handle_IPI will
+			 * be read after the ACK.
+			 */
 			handle_IPI(irqnr, regs);
 #else
 			WARN_ONCE(true, "Unexpected SGI received!\n");
@@ -380,17 +396,45 @@ static void __init gic_dist_init(void)
 	writel_relaxed(0, base + GICD_CTLR);
 	gic_dist_wait_for_rwp();
 
+	/*
+	 * Configure SPIs as non-secure Group-1. This will only matter
+	 * if the GIC only has a single security state. This will not
+	 * do the right thing if the kernel is running in secure mode,
+	 * but that's not the intended use case anyway.
+	 */
+	for (i = 32; i < gic_data.irq_nr; i += 32)
+		writel_relaxed(~0, base + GICD_IGROUPR + i / 8);
+
 	gic_dist_config(base, gic_data.irq_nr, gic_dist_wait_for_rwp);
 
 	/* Enable distributor with ARE, Group1 */
+#if defined(CONFIG_RTK_PLATFORM) && defined(CONFIG_SYNO_LSP_RTD1619)
+#define GICD_CTLR_E1NWF (1 << 7)
+	writel_relaxed(GICD_CTLR_E1NWF | GICD_CTLR_ARE_NS | GICD_CTLR_ENABLE_G1A | GICD_CTLR_ENABLE_G1,
+		       base + GICD_CTLR);
+#else /* CONFIG_RTK_PLATFORM && CONFIG_SYNO_LSP_RTD1619 */
 	writel_relaxed(GICD_CTLR_ARE_NS | GICD_CTLR_ENABLE_G1A | GICD_CTLR_ENABLE_G1,
 		       base + GICD_CTLR);
+#endif /* CONFIG_RTK_PLATFORM && CONFIG_SYNO_LSP_RTD1619 */
 
 	/*
 	 * Set all global interrupts to the boot CPU only. ARE must be
 	 * enabled.
 	 */
 	affinity = gic_mpidr_to_affinity(cpu_logical_map(smp_processor_id()));
+#if defined(CONFIG_SYNO_LSP_RTD1619)
+
+#ifdef CONFIG_RTK_PLATFORM
+	/*
+	 * The GIC selects the appropriate core for a SPI.
+	 * GICD_IROUTER<n>.Interrupt_Routing_Mode = 1
+	 */
+
+	affinity |= 0x80000000;
+
+#endif /* CONFIG_RTK_PLATFORM */
+
+#endif /* CONFIG_SYNO_LSP_RTD1619 */
 	for (i = 32; i < gic_data.irq_nr; i++)
 		gic_write_irouter(affinity, base + GICD_IROUTER + i * 8);
 }
@@ -494,6 +538,9 @@ static void gic_cpu_init(void)
 
 	rbase = gic_data_rdist_sgi_base();
 
+	/* Configure SGIs/PPIs as non-secure Group-1 */
+	writel_relaxed(~0, rbase + GICR_IGROUPR0);
+
 	gic_cpu_config(rbase, gic_redist_wait_for_rwp);
 
 	/* Give LPIs a spin */
@@ -525,7 +572,7 @@ static struct notifier_block gic_cpu_notifier = {
 static u16 gic_compute_target_list(int *base_cpu, const struct cpumask *mask,
 				   unsigned long cluster_id)
 {
-	int cpu = *base_cpu;
+	int next_cpu, cpu = *base_cpu;
 	unsigned long mpidr = cpu_logical_map(cpu);
 	u16 tlist = 0;
 
@@ -539,9 +586,10 @@ static u16 gic_compute_target_list(int *base_cpu, const struct cpumask *mask,
 
 		tlist |= 1 << (mpidr & 0xf);
 
-		cpu = cpumask_next(cpu, mask);
-		if (cpu >= nr_cpu_ids)
+		next_cpu = cpumask_next(cpu, mask);
+		if (next_cpu >= nr_cpu_ids)
 			goto out;
+		cpu = next_cpu;
 
 		mpidr = cpu_logical_map(cpu);
 
@@ -569,7 +617,7 @@ static void gic_send_sgi(u64 cluster_id, u16 tlist, unsigned int irq)
 	       MPIDR_TO_SGI_AFFINITY(cluster_id, 1)	|
 	       tlist << ICC_SGI1R_TARGET_LIST_SHIFT);
 
-	pr_debug("CPU%d: ICC_SGI1R_EL1 %llx\n", smp_processor_id(), val);
+	pr_devel("CPU%d: ICC_SGI1R_EL1 %llx\n", smp_processor_id(), val);
 	gic_write_sgi1r(val);
 }
 
@@ -584,7 +632,7 @@ static void gic_raise_softirq(const struct cpumask *mask, unsigned int irq)
 	 * Ensure that stores to Normal memory are visible to the
 	 * other CPUs before issuing the IPI.
 	 */
-	smp_wmb();
+	wmb();
 
 	for_each_cpu(cpu, mask) {
 		unsigned long cluster_id = cpu_logical_map(cpu) & ~0xffUL;
@@ -612,6 +660,9 @@ static int gic_set_affinity(struct irq_data *d, const struct cpumask *mask_val,
 	int enabled;
 	u64 val;
 
+	if (cpu >= nr_cpu_ids)
+		return -EINVAL;
+
 	if (gic_irq_in_rdist(d))
 		return -EINVAL;
 
@@ -623,6 +674,12 @@ static int gic_set_affinity(struct irq_data *d, const struct cpumask *mask_val,
 	reg = gic_dist_base(d) + GICD_IROUTER + (gic_irq(d) * 8);
 	val = gic_mpidr_to_affinity(cpu_logical_map(cpu));
 
+#if defined(CONFIG_SYNO_LSP_RTD1619)
+#ifdef CONFIG_RTK_PLATFORM
+	if (cpumask_subset(cpu_online_mask, mask_val))
+		val |= 0x80000000;
+#endif /* CONFIG_RTK_PLATFORM */
+#endif /* CONFIG_SYNO_LSP_RTD1619 */
 	gic_write_irouter(val, reg);
 
 	/*
@@ -642,11 +699,57 @@ static int gic_set_affinity(struct irq_data *d, const struct cpumask *mask_val,
 #endif
 
 #ifdef CONFIG_CPU_PM
+#if defined(CONFIG_SYNO_LSP_RTD1619)
+/* Check whether it's single security state view */
+static bool gic_dist_security_disabled(void)
+{
+	return readl_relaxed(gic_data.dist_base + GICD_CTLR) & GICD_CTLR_DS;
+}
+
+#endif /* CONFIG_SYNO_LSP_RTD1619 */
 static int gic_cpu_pm_notifier(struct notifier_block *self,
 			       unsigned long cmd, void *v)
 {
+#if defined(CONFIG_SYNO_LSP_RTD1619)
+#ifdef CONFIG_RTK_PLATFORM
+	void __iomem *rbase;
+
+	rbase = gic_data_rdist_sgi_base();
 	if (cmd == CPU_PM_EXIT) {
+		pr_err("GICR_ISENABLER0 = %x\n", GICR_ISENABLER0_REG);
+		pr_err("GIC_ISENABLER0 = %x\n", GIC_ISENABLER0_REG);
+		pr_err("GIC_ISENABLER1 = %x\n", GIC_ISENABLER1_REG);
+		pr_err("GIC_ISENABLER2 = %x\n", GIC_ISENABLER2_REG);
+		pr_err("GIC_ISENABLER3 = %x\n", GIC_ISENABLER3_REG);
+		writel_relaxed(GICR_ISENABLER0_REG, rbase + GICR_ISENABLER0);
+		writel_relaxed(GIC_ISENABLER0_REG, gic_data.dist_base + 0x100);
+		writel_relaxed(GIC_ISENABLER1_REG, gic_data.dist_base + 0x104);
+		writel_relaxed(GIC_ISENABLER2_REG, gic_data.dist_base + 0x108);
+		writel_relaxed(GIC_ISENABLER3_REG, gic_data.dist_base + 0x10C);
+
+	} else if (cmd == CPU_PM_ENTER) {
+		GICR_ISENABLER0_REG = readl_relaxed(rbase + GICR_ISENABLER0);
+		GIC_ISENABLER0_REG = readl_relaxed(gic_data.dist_base + 0x100);
+		GIC_ISENABLER1_REG = readl_relaxed(gic_data.dist_base + 0x104);
+		GIC_ISENABLER2_REG = readl_relaxed(gic_data.dist_base + 0x108);
+		GIC_ISENABLER3_REG = readl_relaxed(gic_data.dist_base + 0x10C);
+		pr_err("GICR_ISENABLER0 = %x\n", GICR_ISENABLER0_REG);
+		pr_err("GIC_ISENABLER0 = %x\n", GIC_ISENABLER0_REG);
+		pr_err("GIC_ISENABLER1 = %x\n", GIC_ISENABLER1_REG);
+		pr_err("GIC_ISENABLER2 = %x\n", GIC_ISENABLER2_REG);
+		pr_err("GIC_ISENABLER3 = %x\n", GIC_ISENABLER3_REG);
+	}
+#endif /* CONFIG_RTK_PLATFORM */
+
+#endif /* CONFIG_SYNO_LSP_RTD1619 */
+	if (cmd == CPU_PM_EXIT) {
+#if defined(CONFIG_SYNO_LSP_RTD1619)
+		if (gic_dist_security_disabled()) {
+			gic_enable_redist(true);
+		}
+#else /* CONFIG_SYNO_LSP_RTD1619 */
 		gic_enable_redist(true);
+#endif /* CONFIG_SYNO_LSP_RTD1619 */
 		gic_cpu_sys_reg_init();
 	} else if (cmd == CPU_PM_ENTER) {
 		gic_write_grpen1(0);

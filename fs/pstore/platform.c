@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  * Persistent Storage - platform driver interface parts.
  *
@@ -286,6 +289,9 @@ static void pstore_dump(struct kmsg_dumper *dumper,
 	unsigned long	flags = 0;
 	int		is_locked = 0;
 	int		ret;
+#ifdef MY_ABC_HERE
+	struct timespec boot_time;
+#endif
 
 	why = get_reason_str(reason);
 
@@ -298,6 +304,10 @@ static void pstore_dump(struct kmsg_dumper *dumper,
 	} else
 		spin_lock_irqsave(&psinfo->buf_lock, flags);
 	oopscount++;
+
+#ifdef MY_ABC_HERE
+	getboottime64(&boot_time);
+#endif
 	while (total < kmsg_bytes) {
 		char *dst;
 		unsigned long size;
@@ -309,8 +319,13 @@ static void pstore_dump(struct kmsg_dumper *dumper,
 
 		if (big_oops_buf && is_locked) {
 			dst = big_oops_buf;
+#ifdef MY_ABC_HERE
+			hsize = sprintf(dst, "%s#%d Part%u, btime %d\n", why,
+							oopscount, part, (int)boot_time.tv_sec);
+#else
 			hsize = sprintf(dst, "%s#%d Part%u\n", why,
 							oopscount, part);
+#endif
 			size = big_oops_buf_sz - hsize;
 
 			if (!kmsg_dump_get_buffer(dumper, true, dst + hsize,
@@ -329,8 +344,13 @@ static void pstore_dump(struct kmsg_dumper *dumper,
 			}
 		} else {
 			dst = psinfo->buf;
+#ifdef MY_ABC_HERE
+			hsize = sprintf(dst, "%s#%d Part%u, btime %d\n", why,
+							oopscount, part, (int)boot_time.tv_sec);
+#else
 			hsize = sprintf(dst, "%s#%d Part%u\n", why, oopscount,
 									part);
+#endif
 			size = psinfo->bufsize - hsize;
 			dst += hsize;
 
@@ -392,8 +412,8 @@ static void pstore_console_write(struct console *con, const char *s, unsigned c)
 		} else {
 			spin_lock_irqsave(&psinfo->buf_lock, flags);
 		}
-		memcpy(psinfo->buf, s, c);
-		psinfo->write(PSTORE_TYPE_CONSOLE, 0, &id, 0, 0, 0, c, psinfo);
+		psinfo->write_buf(PSTORE_TYPE_CONSOLE, 0, &id, 0,
+				  s, 0, c, psinfo);
 		spin_unlock_irqrestore(&psinfo->buf_lock, flags);
 		s += c;
 		c = e - s;

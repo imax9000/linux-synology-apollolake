@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  * Enclosure Services
  *
@@ -28,10 +31,18 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/slab.h>
+#ifdef MY_DEF_HERE
+#include <scsi/scsi_device.h>
+#endif /* MY_DEF_HERE */
 
 static LIST_HEAD(container_list);
 static DEFINE_MUTEX(container_list_lock);
 static struct class enclosure_class;
+
+#ifdef MY_DEF_HERE
+// Add prototype here to avoid build fail
+static void enclosure_remove_links(struct enclosure_component *cdev);
+#endif /* MY_DEF_HERE */
 
 /**
  * enclosure_find - find an enclosure given a parent device
@@ -148,7 +159,7 @@ enclosure_register(struct device *dev, const char *name, int components,
 	for (i = 0; i < components; i++) {
 		edev->component[i].number = -1;
 		edev->component[i].slot = -1;
-		edev->component[i].power_status = 1;
+		edev->component[i].power_status = -1;
 	}
 
 	mutex_lock(&container_list_lock);
@@ -174,14 +185,52 @@ static struct enclosure_component_callbacks enclosure_null_callbacks;
 void enclosure_unregister(struct enclosure_device *edev)
 {
 	int i;
+#ifdef MY_DEF_HERE
+	struct enclosure_component *cdev = NULL;
+#endif /* MY_DEF_HERE */
+#ifdef MY_DEF_HERE
+	struct scsi_device *scsi_dev = NULL;
+	struct scsi_device *scsi_enc = NULL;
+#endif /* MY_DEF_HERE */
 
 	mutex_lock(&container_list_lock);
 	list_del(&edev->node);
 	mutex_unlock(&container_list_lock);
 
+#ifdef MY_DEF_HERE
+	for (i = 0; i < edev->components; i++) {
+		if (edev->component[i].number != -1) {
+			//======================================= Following part is copy from enclosure_remove_device ===================
+			cdev = &edev->component[i];
+			if (cdev->dev != NULL) {
+#ifdef MY_DEF_HERE
+				if (ENCLOSURE_COMPONENT_ARRAY_DEVICE == cdev->type) {
+					scsi_dev = to_scsi_device(cdev->dev);
+					scsi_enc = to_scsi_device(edev->edev.parent);
+#ifdef MY_ABC_HERE
+					printk(KERN_INFO "SCSI device (%s) with disk name (%s) removed from SLOT%02d of enclosure(%s), %.8s-%."CONFIG_SYNO_DISK_MODEL_LEN"s",
+							dev_name(cdev->dev), scsi_dev->syno_disk_name, cdev->number + 1, dev_name(&(edev->edev)),
+							scsi_enc->vendor, scsi_enc->model);
+#else /* MY_ABC_HERE */
+					printk(KERN_INFO "SCSI device (%s) with disk name (%s) removed from SLOT%02d of enclosure(%s), %.8s-%.16s",
+							dev_name(cdev->dev), scsi_dev->syno_disk_name, cdev->number + 1, dev_name(&(edev->edev)),
+							scsi_enc->vendor, scsi_enc->model);
+#endif /* MY_ABC_HERE */
+				}
+#endif /* MY_DEF_HERE */
+				enclosure_remove_links(cdev);
+				put_device(cdev->dev);
+				cdev->dev = NULL;
+			}
+			//======================================= Above part is copy from enclosure_remove_device ===================
+			device_unregister(&edev->component[i].cdev);
+		}
+	}
+#else /* MY_DEF_HERE */
 	for (i = 0; i < edev->components; i++)
 		if (edev->component[i].number != -1)
 			device_unregister(&edev->component[i].cdev);
+#endif /* MY_DEF_HERE */
 
 	/* prevent any callbacks into service user */
 	edev->cb = &enclosure_null_callbacks;
@@ -242,12 +291,17 @@ static void enclosure_release(struct device *cdev)
 
 static void enclosure_component_release(struct device *dev)
 {
+#ifdef MY_DEF_HERE
+	// the reason of #40515 happen is because of the following code,
+	// unregister will remove sysfs structure, and remove links in release stage will trigger warn on
+#else /* MY_DEF_HERE */
 	struct enclosure_component *cdev = to_enclosure_component(dev);
 
 	if (cdev->dev) {
 		enclosure_remove_links(cdev);
 		put_device(cdev->dev);
 	}
+#endif /* MY_DEF_HERE */
 	put_device(dev->parent);
 }
 
@@ -375,6 +429,11 @@ int enclosure_add_device(struct enclosure_device *edev, int component,
 			 struct device *dev)
 {
 	struct enclosure_component *cdev;
+	int err;
+#ifdef MY_DEF_HERE
+	struct scsi_device *scsi_dev = NULL;
+	struct scsi_device *scsi_enc = NULL;
+#endif /* MY_DEF_HERE */
 
 	if (!edev || component >= edev->components)
 		return -EINVAL;
@@ -384,12 +443,34 @@ int enclosure_add_device(struct enclosure_device *edev, int component,
 	if (cdev->dev == dev)
 		return -EEXIST;
 
-	if (cdev->dev)
+	if (cdev->dev) {
 		enclosure_remove_links(cdev);
-
-	put_device(cdev->dev);
+		put_device(cdev->dev);
+	}
 	cdev->dev = get_device(dev);
-	return enclosure_add_links(cdev);
+
+#ifdef MY_DEF_HERE
+	if (ENCLOSURE_COMPONENT_ARRAY_DEVICE == cdev->type) {
+		scsi_dev = to_scsi_device(dev);
+		scsi_enc = to_scsi_device(edev->edev.parent);
+#ifdef MY_ABC_HERE
+		printk(KERN_INFO "SCSI device (%s) with disk name (%s) plugged in SLOT%02d of enclosure(%s), %.8s-%."CONFIG_SYNO_DISK_MODEL_LEN"s",
+				dev_name(dev), scsi_dev->syno_disk_name, cdev->number + 1, dev_name(&(edev->edev)),
+				scsi_enc->vendor, scsi_enc->model);
+#else /* MY_ABC_HERE */
+		printk(KERN_INFO "SCSI device (%s) with disk name (%s) plugged in SLOT%02d of enclosure(%s), %.8s-%.16s",
+				dev_name(dev), scsi_dev->syno_disk_name, cdev->number + 1, dev_name(&(edev->edev)),
+				scsi_enc->vendor, scsi_enc->model);
+#endif /* MY_ABC_HERE */
+	}
+#endif /* MY_DEF_HERE */
+
+	err = enclosure_add_links(cdev);
+	if (err) {
+		put_device(cdev->dev);
+		cdev->dev = NULL;
+	}
+	return err;
 }
 EXPORT_SYMBOL_GPL(enclosure_add_device);
 
@@ -404,6 +485,10 @@ EXPORT_SYMBOL_GPL(enclosure_add_device);
 int enclosure_remove_device(struct enclosure_device *edev, struct device *dev)
 {
 	struct enclosure_component *cdev;
+#ifdef MY_DEF_HERE
+	struct scsi_device *scsi_dev = NULL;
+	struct scsi_device *scsi_enc = NULL;
+#endif /* MY_DEF_HERE */
 	int i;
 
 	if (!edev || !dev)
@@ -412,6 +497,21 @@ int enclosure_remove_device(struct enclosure_device *edev, struct device *dev)
 	for (i = 0; i < edev->components; i++) {
 		cdev = &edev->component[i];
 		if (cdev->dev == dev) {
+#ifdef MY_DEF_HERE
+			if (ENCLOSURE_COMPONENT_ARRAY_DEVICE == cdev->type) {
+				scsi_dev = to_scsi_device(dev);
+				scsi_enc = to_scsi_device(edev->edev.parent);
+#ifdef MY_ABC_HERE
+				printk(KERN_INFO "SCSI device (%s) with disk name (%s) removed from SLOT%02d of enclosure(%s), %.8s-%."CONFIG_SYNO_DISK_MODEL_LEN"s",
+						dev_name(dev), scsi_dev->syno_disk_name, cdev->number + 1, dev_name(&(edev->edev)),
+						scsi_enc->vendor, scsi_enc->model);
+#else /* MY_ABC_HERE */
+				printk(KERN_INFO "SCSI device (%s) with disk name (%s) removed from SLOT%02d of enclosure(%s), %.8s-%.16s",
+						dev_name(dev), scsi_dev->syno_disk_name, cdev->number + 1, dev_name(&(edev->edev)),
+						scsi_enc->vendor, scsi_enc->model);
+#endif /* MY_ABC_HERE */
+			}
+#endif /* MY_DEF_HERE */
 			enclosure_remove_links(cdev);
 			device_del(&cdev->cdev);
 			put_device(dev);
@@ -594,6 +694,11 @@ static ssize_t get_component_power_status(struct device *cdev,
 
 	if (edev->cb->get_power_status)
 		edev->cb->get_power_status(edev, ecomp);
+
+	/* If still uninitialized, the callback failed or does not exist. */
+	if (ecomp->power_status == -1)
+		return (edev->cb->get_power_status) ? -EIO : -ENOTTY;
+
 	return snprintf(buf, 40, "%s\n", ecomp->power_status ? "on" : "off");
 }
 

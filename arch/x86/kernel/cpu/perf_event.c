@@ -25,6 +25,7 @@
 #include <linux/cpu.h>
 #include <linux/bitops.h>
 #include <linux/device.h>
+#include <linux/nospec.h>
 
 #include <asm/apic.h>
 #include <asm/stacktrace.h>
@@ -67,7 +68,7 @@ u64 x86_perf_event_update(struct perf_event *event)
 	int shift = 64 - x86_pmu.cntval_bits;
 	u64 prev_raw_count, new_raw_count;
 	int idx = hwc->idx;
-	s64 delta;
+	u64 delta;
 
 	if (idx == INTEL_PMC_IDX_FIXED_BTS)
 		return 0;
@@ -188,8 +189,8 @@ static void release_pmc_hardware(void) {}
 
 static bool check_hw_exists(void)
 {
-	u64 val, val_fail, val_new= ~0;
-	int i, reg, reg_fail, ret = 0;
+	u64 val, val_fail = -1, val_new= ~0;
+	int i, reg, reg_fail = -1, ret = 0;
 	int bios_fail = 0;
 	int reg_safe = -1;
 
@@ -297,17 +298,20 @@ set_ext_hw_attr(struct hw_perf_event *hwc, struct perf_event *event)
 
 	config = attr->config;
 
-	cache_type = (config >>  0) & 0xff;
+	cache_type = (config >> 0) & 0xff;
 	if (cache_type >= PERF_COUNT_HW_CACHE_MAX)
 		return -EINVAL;
+	cache_type = array_index_nospec(cache_type, PERF_COUNT_HW_CACHE_MAX);
 
 	cache_op = (config >>  8) & 0xff;
 	if (cache_op >= PERF_COUNT_HW_CACHE_OP_MAX)
 		return -EINVAL;
+	cache_op = array_index_nospec(cache_op, PERF_COUNT_HW_CACHE_OP_MAX);
 
 	cache_result = (config >> 16) & 0xff;
 	if (cache_result >= PERF_COUNT_HW_CACHE_RESULT_MAX)
 		return -EINVAL;
+	cache_result = array_index_nospec(cache_result, PERF_COUNT_HW_CACHE_RESULT_MAX);
 
 	val = hw_cache_event_ids[cache_type][cache_op][cache_result];
 
@@ -403,6 +407,8 @@ int x86_setup_perfctr(struct perf_event *event)
 
 	if (attr->config >= x86_pmu.max_events)
 		return -EINVAL;
+
+	attr->config = array_index_nospec((unsigned long)attr->config, x86_pmu.max_events);
 
 	/*
 	 * The generic map:
@@ -581,6 +587,7 @@ void x86_pmu_disable_all(void)
 	int idx;
 
 	for (idx = 0; idx < x86_pmu.num_counters; idx++) {
+		struct hw_perf_event *hwc = &cpuc->events[idx]->hw;
 		u64 val;
 
 		if (!test_bit(idx, cpuc->active_mask))
@@ -590,9 +597,24 @@ void x86_pmu_disable_all(void)
 			continue;
 		val &= ~ARCH_PERFMON_EVENTSEL_ENABLE;
 		wrmsrl(x86_pmu_config_addr(idx), val);
+		if (is_counter_pair(hwc))
+			wrmsrl(x86_pmu_config_addr(idx + 1), 0);
 	}
 }
 
+/*
+ * There may be PMI landing after enabled=0. The PMI hitting could be before or
+ * after disable_all.
+ *
+ * If PMI hits before disable_all, the PMU will be disabled in the NMI handler.
+ * It will not be re-enabled in the NMI handler again, because enabled=0. After
+ * handling the NMI, disable_all will be called, which will not change the
+ * state either. If PMI hits after disable_all, the PMU is already disabled
+ * before entering NMI handler. The NMI handler will not change the state
+ * either.
+ *
+ * So either situation is harmless.
+ */
 static void x86_pmu_disable(struct pmu *pmu)
 {
 	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
@@ -645,7 +667,7 @@ struct sched_state {
 	int	counter;	/* counter index */
 	int	unassigned;	/* number of events to be assigned left */
 	int	nr_gp;		/* number of GP counters used */
-	unsigned long used[BITS_TO_LONGS(X86_PMC_IDX_MAX)];
+	u64 used;
 };
 
 /* Total max is X86_PMC_IDX_MAX, but we are O(n!) limited */
@@ -702,8 +724,12 @@ static bool perf_sched_restore_state(struct perf_sched *sched)
 	sched->saved_states--;
 	sched->state = sched->saved[sched->saved_states];
 
-	/* continue with next counter: */
-	clear_bit(sched->state.counter++, sched->state.used);
+	/* this assignment didn't work out */
+	/* XXX broken vs EVENT_PAIR */
+	sched->state.used &= ~BIT_ULL(sched->state.counter);
+
+	/* try the next one */
+	sched->state.counter++;
 
 	return true;
 }
@@ -728,20 +754,32 @@ static bool __perf_sched_find_counter(struct perf_sched *sched)
 	if (c->idxmsk64 & (~0ULL << INTEL_PMC_IDX_FIXED)) {
 		idx = INTEL_PMC_IDX_FIXED;
 		for_each_set_bit_from(idx, c->idxmsk, X86_PMC_IDX_MAX) {
-			if (!__test_and_set_bit(idx, sched->state.used))
-				goto done;
+			u64 mask = BIT_ULL(idx);
+
+			if (sched->state.used & mask)
+				continue;
+
+			sched->state.used |= mask;
+			goto done;
 		}
 	}
 
 	/* Grab the first unused counter starting with idx */
 	idx = sched->state.counter;
 	for_each_set_bit_from(idx, c->idxmsk, INTEL_PMC_IDX_FIXED) {
-		if (!__test_and_set_bit(idx, sched->state.used)) {
-			if (sched->state.nr_gp++ >= sched->max_gp)
-				return false;
+		u64 mask = BIT_ULL(idx);
 
-			goto done;
-		}
+		if (c->flags & PERF_X86_EVENT_PAIR)
+			mask |= mask << 1;
+
+		if (sched->state.used & mask)
+			continue;
+
+		if (sched->state.nr_gp++ >= sched->max_gp)
+			return false;
+
+		sched->state.used |= mask;
+		goto done;
 	}
 
 	return false;
@@ -818,12 +856,10 @@ EXPORT_SYMBOL_GPL(perf_assign_events);
 int x86_schedule_events(struct cpu_hw_events *cpuc, int n, int *assign)
 {
 	struct event_constraint *c;
-	unsigned long used_mask[BITS_TO_LONGS(X86_PMC_IDX_MAX)];
 	struct perf_event *e;
 	int i, wmin, wmax, unsched = 0;
 	struct hw_perf_event *hwc;
-
-	bitmap_zero(used_mask, X86_PMC_IDX_MAX);
+	u64 used_mask = 0;
 
 	if (x86_pmu.start_scheduling)
 		x86_pmu.start_scheduling(cpuc);
@@ -841,6 +877,8 @@ int x86_schedule_events(struct cpu_hw_events *cpuc, int n, int *assign)
 	 * fastpath, try to reuse previous register
 	 */
 	for (i = 0; i < n; i++) {
+		u64 mask;
+
 		hwc = &cpuc->event_list[i]->hw;
 		c = cpuc->event_constraint[i];
 
@@ -852,11 +890,16 @@ int x86_schedule_events(struct cpu_hw_events *cpuc, int n, int *assign)
 		if (!test_bit(hwc->idx, c->idxmsk))
 			break;
 
+		mask = BIT_ULL(hwc->idx);
+		if (is_counter_pair(hwc))
+			mask |= mask << 1;
+
 		/* not already used */
-		if (test_bit(hwc->idx, used_mask))
+		if (used_mask & mask)
 			break;
 
-		__set_bit(hwc->idx, used_mask);
+		used_mask |= mask;
+
 		if (assign)
 			assign[i] = hwc->idx;
 	}
@@ -878,6 +921,15 @@ int x86_schedule_events(struct cpu_hw_events *cpuc, int n, int *assign)
 		if (is_ht_workaround_enabled() && !cpuc->is_fake &&
 		    READ_ONCE(cpuc->excl_cntrs->exclusive_present))
 			gpmax /= 2;
+
+		/*
+		 * Reduce the amount of available counters to allow fitting
+		 * the extra Merge events needed by large increment events.
+		 */
+		if(x86_pmu.flags & PMU_FL_PAIR){
+			gpmax = x86_pmu.num_counters - cpuc->n_pair;
+			WARN_ON(gpmax <= 0);
+		}
 
 		unsched = perf_assign_events(cpuc->event_constraint, n, wmin,
 					     wmax, gpmax, assign);
@@ -943,6 +995,8 @@ static int collect_events(struct cpu_hw_events *cpuc, struct perf_event *leader,
 			return -EINVAL;
 		cpuc->event_list[n] = leader;
 		n++;
+		if (is_counter_pair(&leader->hw))
+			cpuc->n_pair++;
 	}
 	if (!dogrp)
 		return n;
@@ -957,6 +1011,8 @@ static int collect_events(struct cpu_hw_events *cpuc, struct perf_event *leader,
 
 		cpuc->event_list[n] = event;
 		n++;
+		if (is_counter_pair(&event->hw))
+			cpuc->n_pair++;
 	}
 	return n;
 }
@@ -1123,6 +1179,13 @@ int x86_perf_event_set_period(struct perf_event *event)
 
 		wrmsrl(hwc->event_base, (u64)(-left) & x86_pmu.cntval_mask);
 	}
+
+		/*
+		 * Clear the Merge event counter's upper 16 bits since
+		 * we currently declare a 48-bit counter width
+		 */
+		if (is_counter_pair(hwc))
+			wrmsrl(x86_pmu_event_addr(idx + 1), 0);
 
 	/*
 	 * Due to erratum on certan cpu we need
@@ -1291,8 +1354,9 @@ void x86_pmu_stop(struct perf_event *event, int flags)
 	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
 	struct hw_perf_event *hwc = &event->hw;
 
-	if (__test_and_clear_bit(hwc->idx, cpuc->active_mask)) {
+	if (test_bit(hwc->idx, cpuc->active_mask)) {
 		x86_pmu.disable(event);
+		__clear_bit(hwc->idx, cpuc->active_mask);
 		cpuc->events[hwc->idx] = NULL;
 		WARN_ON_ONCE(hwc->state & PERF_HES_STOPPED);
 		hwc->state |= PERF_HES_STOPPED;
@@ -1380,16 +1444,8 @@ int x86_pmu_handle_irq(struct pt_regs *regs)
 	apic_write(APIC_LVTPC, APIC_DM_NMI);
 
 	for (idx = 0; idx < x86_pmu.num_counters; idx++) {
-		if (!test_bit(idx, cpuc->active_mask)) {
-			/*
-			 * Though we deactivated the counter some cpus
-			 * might still deliver spurious interrupts still
-			 * in flight. Catch them:
-			 */
-			if (__test_and_clear_bit(idx, cpuc->running))
-				handled++;
+		if (!test_bit(idx, cpuc->active_mask))
 			continue;
-		}
 
 		event = cpuc->events[idx];
 
@@ -1983,8 +2039,8 @@ static int x86_pmu_event_init(struct perf_event *event)
 
 static void refresh_pce(void *ignored)
 {
-	if (current->mm)
-		load_mm_cr4(current->mm);
+	if (current->active_mm)
+		load_mm_cr4(current->active_mm);
 }
 
 static void x86_pmu_event_mapped(struct perf_event *event)
@@ -2168,11 +2224,11 @@ static int backtrace_stack(void *data, char *name)
 	return 0;
 }
 
-static void backtrace_address(void *data, unsigned long addr, int reliable)
+static int backtrace_address(void *data, unsigned long addr, int reliable)
 {
 	struct perf_callchain_entry *entry = data;
 
-	perf_callchain_store(entry, addr);
+	return perf_callchain_store(entry, addr);
 }
 
 static const struct stacktrace_ops backtrace_ops = {

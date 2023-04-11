@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  * core.c  --  Voltage/Current Regulator framework.
  *
@@ -39,6 +42,11 @@
 #include "dummy.h"
 #include "internal.h"
 
+#if defined(CONFIG_SYNO_LSP_RTD1619)
+#define SYSFS_RW_uV_EN      //Add by Simon 2014/1/6
+#define SYSFS_RW_OPMODE
+
+#endif /* CONFIG_SYNO_LSP_RTD1619 */
 #define rdev_crit(rdev, fmt, ...)					\
 	pr_crit("%s: " fmt, rdev_get_name(rdev), ##__VA_ARGS__)
 #define rdev_err(rdev, fmt, ...)					\
@@ -49,6 +57,10 @@
 	pr_info("%s: " fmt, rdev_get_name(rdev), ##__VA_ARGS__)
 #define rdev_dbg(rdev, fmt, ...)					\
 	pr_debug("%s: " fmt, rdev_get_name(rdev), ##__VA_ARGS__)
+
+#ifdef MY_DEF_HERE
+#define SYSFS_RW_uV_EN          //Add by Simon 2014/1/6
+#endif /* MY_DEF_HERE */
 
 static DEFINE_MUTEX(regulator_list_mutex);
 static LIST_HEAD(regulator_map_list);
@@ -132,24 +144,24 @@ static bool have_full_constraints(void)
 	return has_full_constraints || of_have_populated_dt();
 }
 
+static inline struct regulator_dev *rdev_get_supply(struct regulator_dev *rdev)
+{
+	if (rdev && rdev->supply)
+		return rdev->supply->rdev;
+
+	return NULL;
+}
+
 /**
  * regulator_lock_supply - lock a regulator and its supplies
  * @rdev:         regulator source
  */
 static void regulator_lock_supply(struct regulator_dev *rdev)
 {
-	struct regulator *supply;
-	int i = 0;
+	int i;
 
-	while (1) {
-		mutex_lock_nested(&rdev->mutex, i++);
-		supply = rdev->supply;
-
-		if (!rdev->supply)
-			return;
-
-		rdev = supply->rdev;
-	}
+	for (i = 0; rdev; rdev = rdev_get_supply(rdev), i++)
+		mutex_lock_nested(&rdev->mutex, i);
 }
 
 /**
@@ -359,7 +371,41 @@ static ssize_t regulator_uV_show(struct device *dev,
 
 	return ret;
 }
+#ifdef SYSFS_RW_uV_EN
+static ssize_t regulator_uV_write(struct device *dev, struct device_attribute *attr,
+			const char *buf, size_t count)
+{
+	struct regulator_dev *rdev = dev_get_drvdata(dev);
+	unsigned long voltage;
+	unsigned int min_uV, max_uV;
+	char *endp;
+	int ret, i;
+
+	mutex_lock(&rdev->mutex);
+	endp = (char *)(buf + count);
+	voltage = simple_strtoul(buf, &endp, 10);
+	min_uV = max_uV = (int)voltage;
+
+	ret = regulator_check_voltage(rdev, &min_uV, &max_uV);
+	if (ret < 0)
+		goto out;
+
+	ret = _regulator_do_set_voltage(rdev, min_uV, max_uV);
+	if (ret < 0) {
+		rdev_err(rdev, "unsupportable voltage: support list--\n");
+		for(i=0; i<rdev->desc->n_voltages; i++)
+			rdev_err(rdev, "%d\n", rdev->desc->ops->list_voltage(rdev, i));
+	}
+
+out:
+	mutex_unlock(&rdev->mutex);
+
+	return count;
+}
+static DEVICE_ATTR(microvolts, S_IRUSR | S_IWUSR, regulator_uV_show, regulator_uV_write);
+#else
 static DEVICE_ATTR(microvolts, 0444, regulator_uV_show, NULL);
+#endif
 
 static ssize_t regulator_uA_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
@@ -394,6 +440,58 @@ static ssize_t regulator_print_opmode(char *buf, int mode)
 	return sprintf(buf, "unknown\n");
 }
 
+#if defined(CONFIG_SYNO_LSP_RTD1619)
+static __maybe_unused ssize_t regulator_opmode_store(struct device *dev, struct device_attribute *attr,
+            const char *buf, size_t count)
+{
+    struct regulator_dev *rdev = dev_get_drvdata(dev);
+    int mode = REGULATOR_MODE_NORMAL;
+    int ret;
+    int regulator_curr_mode;
+
+    if (!strncmp(buf, "fast", sizeof("fast") - 1))
+        mode = REGULATOR_MODE_FAST;
+    else if (!strncmp(buf, "normal", sizeof("normal") - 1))
+        mode = REGULATOR_MODE_NORMAL;
+    else if (!strncmp(buf, "idle", sizeof("idle") - 1))
+        mode = REGULATOR_MODE_IDLE;
+    else if (!strncmp(buf, "standby", sizeof("standby") - 1))
+        mode = REGULATOR_MODE_STANDBY;
+    else
+        return -EINVAL;
+
+    mutex_lock(&rdev->mutex);
+
+    /* sanity check */
+    if (!rdev->desc->ops->set_mode) {
+        ret = -EINVAL;
+        goto out;
+    }
+
+    /* return if the same mode is requested */
+    if (rdev->desc->ops->get_mode) {
+        regulator_curr_mode = rdev->desc->ops->get_mode(rdev);
+        if (regulator_curr_mode == mode) {
+            ret = 0;
+            goto out;
+        }
+    }
+
+    /* constraints check */
+    ret = regulator_mode_constrain(rdev, &mode);
+    if (ret < 0)
+        goto out;
+
+    ret = rdev->desc->ops->set_mode(rdev, mode);
+out:
+    mutex_unlock(&rdev->mutex);
+
+    if (ret)
+        return ret;
+    return count;
+}
+
+#endif /* CONFIG_SYNO_LSP_RTD1619 */
 static ssize_t regulator_opmode_show(struct device *dev,
 				    struct device_attribute *attr, char *buf)
 {
@@ -401,7 +499,11 @@ static ssize_t regulator_opmode_show(struct device *dev,
 
 	return regulator_print_opmode(buf, _regulator_get_mode(rdev));
 }
+#if defined(SYSFS_RW_OPMODE) && defined(CONFIG_SYNO_LSP_RTD1619)
+static DEVICE_ATTR(opmode, S_IRUSR | S_IWUSR, regulator_opmode_show, regulator_opmode_store);
+#else /* SYSFS_RW_OPMODE && CONFIG_SYNO_LSP_RTD1619 */
 static DEVICE_ATTR(opmode, 0444, regulator_opmode_show, NULL);
+#endif /* SYSFS_RW_OPMODE && CONFIG_SYNO_LSP_RTD1619 */
 
 static ssize_t regulator_print_state(char *buf, int state)
 {
@@ -1519,6 +1621,7 @@ static int regulator_resolve_supply(struct regulator_dev *rdev)
 		ret = regulator_enable(rdev->supply);
 		if (ret < 0) {
 			_regulator_put(rdev->supply);
+			rdev->supply = NULL;
 			return ret;
 		}
 	}
@@ -4273,12 +4376,13 @@ static void regulator_summary_show_subtree(struct seq_file *s,
 	seq_puts(s, "\n");
 
 	list_for_each_entry(consumer, &rdev->consumer_list, list) {
-		if (consumer->dev->class == &regulator_class)
+		if (consumer->dev && consumer->dev->class == &regulator_class)
 			continue;
 
 		seq_printf(s, "%*s%-*s ",
 			   (level + 1) * 3 + 1, "",
-			   30 - (level + 1) * 3, dev_name(consumer->dev));
+			   30 - (level + 1) * 3,
+			   consumer->dev ? dev_name(consumer->dev) : "deviceless");
 
 		switch (rdev->desc->type) {
 		case REGULATOR_VOLTAGE:

@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  *	Driver for Broadcom 63xx SOCs integrated PHYs
  *
@@ -20,6 +23,23 @@
 MODULE_DESCRIPTION("Broadcom 63xx internal PHY driver");
 MODULE_AUTHOR("Maxime Bizon <mbizon@freebox.fr>");
 MODULE_LICENSE("GPL");
+
+static int bcm63xx_config_intr(struct phy_device *phydev)
+{
+	int reg, err;
+
+	reg = phy_read(phydev, MII_BCM63XX_IR);
+	if (reg < 0)
+		return reg;
+
+	if (phydev->interrupts == PHY_INTERRUPT_ENABLED)
+		reg &= ~MII_BCM63XX_IR_GMASK;
+	else
+		reg |= MII_BCM63XX_IR_GMASK;
+
+	err = phy_write(phydev, MII_BCM63XX_IR, reg);
+	return err;
+}
 
 static int bcm63xx_config_init(struct phy_device *phydev)
 {
@@ -55,8 +75,12 @@ static struct phy_driver bcm63xx_driver[] = {
 	.config_aneg	= genphy_config_aneg,
 	.read_status	= genphy_read_status,
 	.ack_interrupt	= bcm_phy_ack_intr,
-	.config_intr	= bcm_phy_config_intr,
+	.config_intr	= bcm63xx_config_intr,
+#if defined(MY_DEF_HERE)
+//do nothing
+#else /* MY_DEF_HERE */
 	.driver		= { .owner = THIS_MODULE },
+#endif /* MY_DEF_HERE */
 }, {
 	/* same phy as above, with just a different OUI */
 	.phy_id		= 0x002bdc00,
@@ -68,8 +92,12 @@ static struct phy_driver bcm63xx_driver[] = {
 	.config_aneg	= genphy_config_aneg,
 	.read_status	= genphy_read_status,
 	.ack_interrupt	= bcm_phy_ack_intr,
-	.config_intr	= bcm_phy_config_intr,
+	.config_intr	= bcm63xx_config_intr,
+#if defined(MY_DEF_HERE)
+//do nothing
+#else /* MY_DEF_HERE */
 	.driver		= { .owner = THIS_MODULE },
+#endif /* MY_DEF_HERE */
 } };
 
 module_phy_driver(bcm63xx_driver);

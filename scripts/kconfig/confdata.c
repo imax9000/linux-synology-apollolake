@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  * Copyright (C) 2002 Roman Zippel <zippel@linux-m68k.org>
  * Released under the terms of the GNU GPL v2.0.
@@ -15,6 +18,7 @@
 #include <unistd.h>
 
 #include "lkc.h"
+
 
 struct conf_printer {
 	void (*print_symbol)(FILE *, struct symbol *, const char *, void *);
@@ -267,10 +271,8 @@ int conf_read_simple(const char *name, int def)
 		if (in)
 			goto load;
 		sym_add_change_count(1);
-		if (!sym_defconfig_list) {
-			sym_calc_value(modules_sym);
+		if (!sym_defconfig_list)
 			return 1;
-		}
 
 		for_all_defaults(sym_defconfig_list, prop) {
 			if (expr_calc_value(prop->visible.expr) == no ||
@@ -403,7 +405,6 @@ setsym:
 	}
 	free(line);
 	fclose(in);
-	sym_calc_value(modules_sym);
 	return 0;
 }
 
@@ -414,8 +415,12 @@ int conf_read(const char *name)
 
 	sym_set_change_count(0);
 
-	if (conf_read_simple(name, S_DEF_USER))
+	if (conf_read_simple(name, S_DEF_USER)) {
+		sym_calc_value(modules_sym);
 		return 1;
+	}
+
+	sym_calc_value(modules_sym);
 
 	for_all_symbols(i, sym) {
 		sym_calc_value(sym);
@@ -742,7 +747,7 @@ int conf_write(const char *name)
 	struct menu *menu;
 	const char *basename;
 	const char *str;
-	char dirname[PATH_MAX+1], tmpname[PATH_MAX+1], newname[PATH_MAX+1];
+	char dirname[PATH_MAX+1], tmpname[PATH_MAX+22], newname[PATH_MAX+8];
 	char *env;
 
 	dirname[0] = 0;
@@ -846,6 +851,7 @@ static int conf_split_config(void)
 
 	name = conf_get_autoconfig_name();
 	conf_read_simple(name, S_DEF_AUTO);
+	sym_calc_value(modules_sym);
 
 	if (chdir("include/config"))
 		return 1;
@@ -953,6 +959,9 @@ int conf_write_autoconf(void)
 	const char *name;
 	FILE *out, *tristate, *out_h;
 	int i;
+#ifdef MY_ABC_HERE
+	FILE *syno_h;
+#endif /* MY_ABC_HERE */
 
 	sym_clear_all_valid();
 
@@ -978,6 +987,19 @@ int conf_write_autoconf(void)
 		return 1;
 	}
 
+#ifdef MY_ABC_HERE
+	syno_h = fopen(".tmpsynoconfig.h", "w");
+	if (!syno_h) {
+		fclose(out);
+		fclose(tristate);
+		fclose(out_h);
+		return 1;
+	}
+	conf_write_heading(syno_h, &header_printer_cb, NULL);
+	fprintf(syno_h, "#ifndef __SYNO_AUTOCONF_H__\n"
+			"#define __SYNO_AUTOCONF_H__\n");
+#endif /* MY_ABC_HERE */
+
 	conf_write_heading(out, &kconfig_printer_cb, NULL);
 
 	conf_write_heading(tristate, &tristate_printer_cb, NULL);
@@ -995,11 +1017,22 @@ int conf_write_autoconf(void)
 		conf_write_symbol(tristate, sym, &tristate_printer_cb, (void *)1);
 
 		conf_write_symbol(out_h, sym, &header_printer_cb, NULL);
+#ifdef MY_ABC_HERE
+		if (strncmp(sym->name, "SYNO", 4) == 0) {
+			conf_write_symbol(syno_h, sym, &header_printer_cb, NULL);
+		}
+#endif /* MY_ABC_HERE */
 	}
 	fclose(out);
 	fclose(tristate);
 	fclose(out_h);
 
+#ifdef MY_ABC_HERE
+	fprintf(syno_h, "#endif /* __SYNO_AUTOCONF_H__ */");
+	fclose(syno_h);
+	if (rename(".tmpsynoconfig.h", "include/linux/syno_autoconf.h"))
+		return 1;
+#endif /* MY_ABC_HERE */
 	name = getenv("KCONFIG_AUTOHEADER");
 	if (!name)
 		name = "include/generated/autoconf.h";

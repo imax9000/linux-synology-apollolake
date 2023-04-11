@@ -133,12 +133,11 @@ ncp_hash_dentry(const struct dentry *dentry, struct qstr *this)
 		return 0;
 
 	if (!ncp_case_sensitive(inode)) {
-		struct super_block *sb = dentry->d_sb;
 		struct nls_table *t;
 		unsigned long hash;
 		int i;
 
-		t = NCP_IO_TABLE(sb);
+		t = NCP_IO_TABLE(dentry->d_sb);
 		hash = init_name_hash();
 		for (i=0; i<this->len ; i++)
 			hash = partial_name_hash(ncp_tolower(t, this->name[i]),
@@ -369,7 +368,7 @@ ncp_lookup_validate(struct dentry *dentry, unsigned int flags)
 	if (!res) {
 		struct inode *inode = d_inode(dentry);
 
-		mutex_lock(&inode->i_mutex);
+		inode_lock(inode);
 		if (finfo.i.dirEntNum == NCP_FINFO(inode)->dirEntNum) {
 			ncp_new_dentry(dentry);
 			val=1;
@@ -377,7 +376,7 @@ ncp_lookup_validate(struct dentry *dentry, unsigned int flags)
 			ncp_dbg(2, "found, but dirEntNum changed\n");
 
 		ncp_update_inode2(inode, &finfo);
-		mutex_unlock(&inode->i_mutex);
+		inode_unlock(inode);
 	}
 
 finished:
@@ -633,15 +632,15 @@ ncp_fill_cache(struct file *file, struct dir_context *ctx,
 				d_rehash(newdent);
 		} else {
 			spin_lock(&dentry->d_lock);
-			NCP_FINFO(inode)->flags &= ~NCPI_DIR_CACHE;
+			NCP_FINFO(dir)->flags &= ~NCPI_DIR_CACHE;
 			spin_unlock(&dentry->d_lock);
 		}
 	} else {
 		struct inode *inode = d_inode(newdent);
 
-		mutex_lock_nested(&inode->i_mutex, I_MUTEX_CHILD);
+		inode_lock_nested(inode, I_MUTEX_CHILD);
 		ncp_update_inode2(inode, entry);
-		mutex_unlock(&inode->i_mutex);
+		inode_unlock(inode);
 	}
 
 	if (ctl.idx >= NCP_DIRCACHE_SIZE) {

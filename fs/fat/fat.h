@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 #ifndef _FAT_H
 #define _FAT_H
 
@@ -56,6 +59,20 @@ struct fat_mount_options {
 #define FAT_HASH_BITS	8
 #define FAT_HASH_SIZE	(1UL << FAT_HASH_BITS)
 
+#ifdef MY_ABC_HERE
+/* Please consider time complexity before increase the size. Suggestion: less than 32 */
+#define SYNO_FAT_INODE_KEEP_LIST_MAXSIZE 8
+struct syno_inode_keep_entry {
+	struct list_head list_entry;
+	struct inode *inode;
+};
+
+struct syno_inode_keep_list {
+	struct list_head head;
+	struct syno_inode_keep_entry pre_alloc_entry[SYNO_FAT_INODE_KEEP_LIST_MAXSIZE];
+	spinlock_t lock;
+};
+#endif /* MY_ABC_HERE */
 /*
  * MS-DOS file system in-core superblock data
  */
@@ -101,6 +118,9 @@ struct msdos_sb_info {
 
 	unsigned int dirty;           /* fs state before mount */
 	struct rcu_head rcu;
+#ifdef MY_ABC_HERE
+	struct syno_inode_keep_list syno_inode_keep_list;
+#endif /* MY_ABC_HERE */
 };
 
 #define FAT_CACHE_VALID	0	/* special case for valid cache */
@@ -344,6 +364,11 @@ static inline void fatent_brelse(struct fat_entry *fatent)
 	fatent->fat_inode = NULL;
 }
 
+static inline bool fat_valid_entry(struct msdos_sb_info *sbi, int entry)
+{
+	return FAT_START_ENT <= entry && entry < sbi->max_cluster;
+}
+
 extern void fat_ent_access_init(struct super_block *sb);
 extern int fat_ent_read(struct inode *inode, struct fat_entry *fatent,
 			int entry);
@@ -384,6 +409,9 @@ static inline unsigned long fat_dir_hash(int logstart)
 {
 	return hash_32(logstart, FAT_HASH_BITS);
 }
+#ifdef MY_ABC_HERE
+extern int syno_inode_keep_list_update(struct syno_inode_keep_list *list, struct inode *inode);
+#endif /* MY_ABC_HERE */
 
 /* fat/misc.c */
 extern __printf(3, 4) __cold

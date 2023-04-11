@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  * Filesystem access notification for Linux
  *
@@ -101,6 +104,9 @@ struct fsnotify_ops {
 	void (*free_group_priv)(struct fsnotify_group *group);
 	void (*freeing_mark)(struct fsnotify_mark *mark, struct fsnotify_group *group);
 	void (*free_event)(struct fsnotify_event *event);
+#ifdef MY_ABC_HERE
+	int (*fetch_name)(struct fsnotify_event *event, struct fsnotify_group *group);
+#endif /* MY_ABC_HERE */
 };
 
 /*
@@ -148,6 +154,7 @@ struct fsnotify_group {
 	#define FS_PRIO_1	1 /* fanotify content based access control */
 	#define FS_PRIO_2	2 /* fanotify pre-content access */
 	unsigned int priority;
+	bool shutdown;		/* group is being shut down, don't queue more events */
 
 	/* stores all fastpath marks assoc with this group so they can be cleaned on unregister */
 	struct mutex mark_mutex;	/* protect marks_list */
@@ -172,6 +179,14 @@ struct fsnotify_group {
 			struct user_struct      *user;
 		} inotify_data;
 #endif
+#ifdef MY_ABC_HERE
+		struct synotify_group_private_data {
+			struct user_struct *user;
+			unsigned int max_watchers;
+			char *synotify_full_path_buf;
+			char *synotify_d_path_buf;
+		} synotify_data;
+#endif /* MY_ABC_HERE */
 #ifdef CONFIG_FANOTIFY
 		struct fanotify_group_private_data {
 #ifdef CONFIG_FANOTIFY_ACCESS_PERMISSIONS
@@ -179,7 +194,6 @@ struct fsnotify_group {
 			spinlock_t access_lock;
 			struct list_head access_list;
 			wait_queue_head_t access_waitq;
-			atomic_t bypass_perm;
 #endif /* CONFIG_FANOTIFY_ACCESS_PERMISSIONS */
 			int f_flags;
 			unsigned int max_marks;
@@ -193,6 +207,9 @@ struct fsnotify_group {
 #define FSNOTIFY_EVENT_NONE	0
 #define FSNOTIFY_EVENT_PATH	1
 #define FSNOTIFY_EVENT_INODE	2
+#ifdef MY_ABC_HERE
+#define FSNOTIFY_EVENT_SYNO	3
+#endif /* MY_ABC_HERE */
 
 /*
  * A mark is simply an object attached to an in core inode which allows an
@@ -252,6 +269,10 @@ extern int __fsnotify_parent(struct path *path, struct dentry *dentry, __u32 mas
 extern void __fsnotify_inode_delete(struct inode *inode);
 extern void __fsnotify_vfsmount_delete(struct vfsmount *mnt);
 extern u32 fsnotify_get_cookie(void);
+#ifdef MY_ABC_HERE
+extern int SYNOFsnotify(__u32 mask, void *data, int data_is,
+	     const unsigned char *file_name, u32 cookie);
+#endif /* MY_ABC_HERE */
 
 static inline int fsnotify_inode_watches_children(struct inode *inode)
 {
@@ -308,6 +329,8 @@ extern struct fsnotify_group *fsnotify_alloc_group(const struct fsnotify_ops *op
 extern void fsnotify_get_group(struct fsnotify_group *group);
 /* drop reference on a group from fsnotify_alloc_group */
 extern void fsnotify_put_group(struct fsnotify_group *group);
+/* group destruction begins, stop queuing new events */
+extern void fsnotify_group_stop_queueing(struct fsnotify_group *group);
 /* destroy group */
 extern void fsnotify_destroy_group(struct fsnotify_group *group);
 /* fasync handler function */
@@ -320,8 +343,6 @@ extern int fsnotify_add_event(struct fsnotify_group *group,
 			      struct fsnotify_event *event,
 			      int (*merge)(struct list_head *,
 					   struct fsnotify_event *));
-/* Remove passed event from groups notification queue */
-extern void fsnotify_remove_event(struct fsnotify_group *group, struct fsnotify_event *event);
 /* true if the group notification queue is empty */
 extern bool fsnotify_notify_queue_is_empty(struct fsnotify_group *group);
 /* return, but do not dequeue the first event on the notification queue */

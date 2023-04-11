@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  *  PCA953x 4/8/16/24/40 bit I/O ports
  *
@@ -86,7 +89,7 @@ MODULE_DEVICE_TABLE(acpi, pca953x_acpi_ids);
 #define MAX_BANK 5
 #define BANK_SZ 8
 
-#define NBANK(chip) (chip->gpio_chip.ngpio / BANK_SZ)
+#define NBANK(chip) DIV_ROUND_UP(chip->gpio_chip.ngpio, BANK_SZ)
 
 struct pca953x_chip {
 	unsigned gpio_start;
@@ -367,7 +370,11 @@ static void pca953x_setup_gpio(struct pca953x_chip *chip, int gpios)
 	gc->base = chip->gpio_start;
 	gc->ngpio = gpios;
 	gc->label = chip->client->name;
+#if defined(MY_DEF_HERE)
+	gc->parent = &chip->client->dev;
+#else /* MY_DEF_HERE */
 	gc->dev = &chip->client->dev;
+#endif /* MY_DEF_HERE */
 	gc->owner = THIS_MODULE;
 	gc->names = chip->names;
 }

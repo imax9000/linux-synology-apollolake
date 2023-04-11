@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  *	Linux ethernet bridge
  *
@@ -77,6 +80,16 @@ struct bridge_mcast_querier {
 };
 #endif
 
+#if defined(MY_DEF_HERE)
+struct br_vlan_stats {
+	u64 rx_bytes;
+	u64 rx_packets;
+	u64 tx_bytes;
+	u64 tx_packets;
+	struct u64_stats_sync syncp;
+};
+#endif /* MY_DEF_HERE */
+
 /**
  * struct net_bridge_vlan - per-vlan entry
  *
@@ -100,6 +113,12 @@ struct net_bridge_vlan {
 	struct rhash_head		vnode;
 	u16				vid;
 	u16				flags;
+#if defined(MY_DEF_HERE)
+/*
+ * @stats: per-cpu VLAN statistics
+ */
+	struct br_vlan_stats __percpu	*stats;
+#endif /* MY_DEF_HERE */
 	union {
 		struct net_bridge	*br;
 		struct net_bridge_port	*port;
@@ -301,6 +320,7 @@ struct net_bridge
 	u8				multicast_disabled:1;
 	u8				multicast_querier:1;
 	u8				multicast_query_use_ifaddr:1;
+	u8				has_ipv6_addr:1;
 
 	u32				hash_elasticity;
 	u32				hash_max;
@@ -339,6 +359,9 @@ struct net_bridge
 #ifdef CONFIG_BRIDGE_VLAN_FILTERING
 	struct net_bridge_vlan_group	__rcu *vlgrp;
 	u8				vlan_enabled;
+#if defined(MY_DEF_HERE)
+	u8				vlan_stats_enabled;
+#endif /* MY_DEF_HERE */
 	__be16				vlan_proto;
 	u16				default_pvid;
 #endif
@@ -574,10 +597,22 @@ static inline bool br_multicast_is_router(struct net_bridge *br)
 
 static inline bool
 __br_multicast_querier_exists(struct net_bridge *br,
-			      struct bridge_mcast_other_query *querier)
+				struct bridge_mcast_other_query *querier,
+				const bool is_ipv6)
 {
+	bool own_querier_enabled;
+
+	if (br->multicast_querier) {
+		if (is_ipv6 && !br->has_ipv6_addr)
+			own_querier_enabled = false;
+		else
+			own_querier_enabled = true;
+	} else {
+		own_querier_enabled = false;
+	}
+
 	return time_is_before_jiffies(querier->delay_time) &&
-	       (br->multicast_querier || timer_pending(&querier->timer));
+	       (own_querier_enabled || timer_pending(&querier->timer));
 }
 
 static inline bool br_multicast_querier_exists(struct net_bridge *br,
@@ -585,10 +620,12 @@ static inline bool br_multicast_querier_exists(struct net_bridge *br,
 {
 	switch (eth->h_proto) {
 	case (htons(ETH_P_IP)):
-		return __br_multicast_querier_exists(br, &br->ip4_other_query);
+		return __br_multicast_querier_exists(br,
+			&br->ip4_other_query, false);
 #if IS_ENABLED(CONFIG_IPV6)
 	case (htons(ETH_P_IPV6)):
-		return __br_multicast_querier_exists(br, &br->ip6_other_query);
+		return __br_multicast_querier_exists(br,
+			&br->ip6_other_query, true);
 #endif
 	default:
 		return false;
@@ -688,6 +725,9 @@ int __br_vlan_filter_toggle(struct net_bridge *br, unsigned long val);
 int br_vlan_filter_toggle(struct net_bridge *br, unsigned long val);
 int __br_vlan_set_proto(struct net_bridge *br, __be16 proto);
 int br_vlan_set_proto(struct net_bridge *br, unsigned long val);
+#if defined(MY_DEF_HERE)
+int br_vlan_set_stats(struct net_bridge *br, unsigned long val);
+#endif /* MY_DEF_HERE */
 int br_vlan_init(struct net_bridge *br);
 int br_vlan_set_default_pvid(struct net_bridge *br, unsigned long val);
 int __br_vlan_set_default_pvid(struct net_bridge *br, u16 pvid);
@@ -877,7 +917,6 @@ static inline struct net_bridge_vlan_group *nbp_vlan_group_rcu(
 {
 	return NULL;
 }
-
 #endif
 
 struct nf_br_ops {
@@ -897,7 +936,11 @@ static inline void br_nf_core_fini(void) {}
 #endif
 
 /* br_stp.c */
+#if defined(MY_DEF_HERE)
+//do nothing
+#else /* MY_DEF_HERE */
 void br_log_state(const struct net_bridge_port *p);
+#endif /* MY_DEF_HERE */
 void br_set_state(struct net_bridge_port *p, unsigned int state);
 struct net_bridge_port *br_get_port(struct net_bridge *br, u16 port_no);
 void br_init_port(struct net_bridge_port *p);

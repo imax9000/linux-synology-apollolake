@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  *  Copyright (C) 1991, 1992  Linus Torvalds
  */
@@ -357,7 +360,7 @@ struct tty_driver *tty_find_polling_driver(char *name, int *line)
 	mutex_lock(&tty_mutex);
 	/* Search through the tty devices to look for a match */
 	list_for_each_entry(p, &tty_drivers, tty_drivers) {
-		if (strncmp(name, p->name, len) != 0)
+		if (!len || strncmp(name, p->name, len) != 0)
 			continue;
 		stp = str;
 		if (*stp == ',')
@@ -512,6 +515,8 @@ void proc_clear_tty(struct task_struct *p)
 	spin_unlock_irqrestore(&p->sighand->siglock, flags);
 	tty_kref_put(tty);
 }
+
+extern void tty_sysctl_init(void);
 
 /**
  * proc_set_tty -  set the controlling terminal
@@ -702,6 +707,14 @@ static void __tty_hangup(struct tty_struct *tty, int exit_session)
 		return;
 	}
 
+	/*
+	 * Some console devices aren't actually hung up for technical and
+	 * historical reasons, which can lead to indefinite interruptible
+	 * sleep in n_tty_read().  The following explicitly tells
+	 * n_tty_read() to abort readers.
+	 */
+	set_bit(TTY_HUPPING, &tty->flags);
+
 	/* inuse_filps is protected by the single tty lock,
 	   this really needs to change if we want to flush the
 	   workqueue with the lock held */
@@ -757,6 +770,7 @@ static void __tty_hangup(struct tty_struct *tty, int exit_session)
 	 * can't yet guarantee all that.
 	 */
 	set_bit(TTY_HUPPED, &tty->flags);
+	clear_bit(TTY_HUPPING, &tty->flags);
 	tty_unlock(tty);
 
 	if (f)
@@ -1159,8 +1173,22 @@ static inline ssize_t do_tty_write(
 		if (size > chunk)
 			size = chunk;
 		ret = -EFAULT;
+#if defined(MY_ABC_HERE) && defined(MY_ABC_HERE)
+		if (0 == strcmp(tty->name, "ttyS1")) {
+			if (access_ok(VERIFY_READ, buf, size)) {
+				if (copy_from_user(tty->write_buf, buf, size)) {
+					printk(KERN_DEBUG "error attempted to copy_from_user\n");
+				}
+			} else {
+				memcpy(tty->write_buf, buf, size);
+			}
+		} else {
+#endif /* MY_ABC_HERE && MY_ABC_HERE */
 		if (copy_from_user(tty->write_buf, buf, size))
 			break;
+#if defined(MY_ABC_HERE) && defined(MY_ABC_HERE)
+		}
+#endif /* MY_ABC_HERE && MY_ABC_HERE */
 		ret = write(tty, file, tty->write_buf, size);
 		if (ret <= 0)
 			break;
@@ -1245,7 +1273,14 @@ static ssize_t tty_write(struct file *file, const char __user *buf,
 	if (!ld->ops->write)
 		ret = -EIO;
 	else
+#if defined(MY_ABC_HERE) && defined(MY_ABC_HERE)
+	{
+		if (0 == strcmp(tty->name, "ttyS1"))
+			do_tty_write(ld->ops->write, tty, file, "-", 1);
+
 		ret = do_tty_write(ld->ops->write, tty, file, buf, count);
+	}
+#endif /* MY_ABC_HERE && MY_ABC_HERE */
 	tty_ldisc_deref(ld);
 	return ret;
 }
@@ -1462,12 +1497,12 @@ static int tty_reopen(struct tty_struct *tty)
 {
 	struct tty_driver *driver = tty->driver;
 
-	if (!tty->count)
-		return -EIO;
-
 	if (driver->type == TTY_DRIVER_TYPE_PTY &&
 	    driver->subtype == PTY_TYPE_MASTER)
 		return -EIO;
+
+	if (!tty->count)
+		return -EAGAIN;
 
 	if (test_bit(TTY_EXCLUSIVE, &tty->flags) && !capable(CAP_SYS_ADMIN))
 		return -EBUSY;
@@ -1694,6 +1729,8 @@ static void release_tty(struct tty_struct *tty, int idx)
 	if (tty->link)
 		tty->link->port->itty = NULL;
 	tty_buffer_cancel_work(tty->port);
+	if (tty->link)
+		tty_buffer_cancel_work(tty->link->port);
 
 	tty_kref_put(tty->link);
 	tty_kref_put(tty);
@@ -2069,9 +2106,13 @@ retry_open:
 
 		if (tty) {
 			mutex_unlock(&tty_mutex);
-			tty_lock(tty);
-			/* safe to drop the kref from tty_driver_lookup_tty() */
-			tty_kref_put(tty);
+			retval = tty_lock_interruptible(tty);
+			tty_kref_put(tty);  /* drop kref from tty_driver_lookup_tty() */
+			if (retval) {
+				if (retval == -EINTR)
+					retval = -ERESTARTSYS;
+				goto err_unref;
+			}
 			retval = tty_reopen(tty);
 			if (retval < 0) {
 				tty_unlock(tty);
@@ -2087,7 +2128,11 @@ retry_open:
 
 	if (IS_ERR(tty)) {
 		retval = PTR_ERR(tty);
-		goto err_file;
+		if (retval != -EAGAIN || signal_pending(current))
+			goto err_file;
+		tty_free_file(filp);
+		schedule();
+		goto retry_open;
 	}
 
 	tty_add_file(tty, filp);
@@ -2156,6 +2201,7 @@ retry_open:
 	return 0;
 err_unlock:
 	mutex_unlock(&tty_mutex);
+err_unref:
 	/* after locks to avoid deadlock */
 	if (!IS_ERR_OR_NULL(driver))
 		tty_driver_kref_put(driver);
@@ -2277,7 +2323,8 @@ static int tiocsti(struct tty_struct *tty, char __user *p)
 		return -EFAULT;
 	tty_audit_tiocsti(tty, ch);
 	ld = tty_ldisc_ref_wait(tty);
-	ld->ops->receive_buf(tty, &ch, &mbz, 1);
+	if (ld->ops->receive_buf)
+		ld->ops->receive_buf(tty, &ch, &mbz, 1);
 	tty_ldisc_deref(ld);
 	return 0;
 }
@@ -2653,6 +2700,28 @@ static int tiocsetd(struct tty_struct *tty, int __user *p)
 }
 
 /**
+ *	tiocgetd	-	get line discipline
+ *	@tty: tty device
+ *	@p: pointer to user data
+ *
+ *	Retrieves the line discipline id directly from the ldisc.
+ *
+ *	Locking: waits for ldisc reference (in case the line discipline
+ *		is changing or the tty is being hungup)
+ */
+
+static int tiocgetd(struct tty_struct *tty, int __user *p)
+{
+	struct tty_ldisc *ld;
+	int ret;
+
+	ld = tty_ldisc_ref_wait(tty);
+	ret = put_user(ld->ops->num, p);
+	tty_ldisc_deref(ld);
+	return ret;
+}
+
+/**
  *	send_break	-	performed time break
  *	@tty: device to break on
  *	@duration: timeout in mS
@@ -2878,7 +2947,7 @@ long tty_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case TIOCGSID:
 		return tiocgsid(tty, real_tty, p);
 	case TIOCGETD:
-		return put_user(tty->ldisc->ops->num, (int __user *)p);
+		return tiocgetd(tty, p);
 	case TIOCSETD:
 		return tiocsetd(tty, p);
 	case TIOCVHANGUP:
@@ -3112,7 +3181,10 @@ struct tty_struct *alloc_tty_struct(struct tty_driver *driver, int idx)
 
 	kref_init(&tty->kref);
 	tty->magic = TTY_MAGIC;
-	tty_ldisc_init(tty);
+	if (tty_ldisc_init(tty)) {
+		kfree(tty);
+		return NULL;
+	}
 	tty->session = NULL;
 	tty->pgrp = NULL;
 	mutex_init(&tty->legacy_mutex);
@@ -3171,6 +3243,63 @@ int tty_put_char(struct tty_struct *tty, unsigned char ch)
 	return tty->ops->write(tty, &ch, 1);
 }
 EXPORT_SYMBOL_GPL(tty_put_char);
+
+#if defined(MY_ABC_HERE) && defined(MY_ABC_HERE)
+int syno_ttys_write(const int index, const char* szBuf)
+{
+	int err = -1;
+	struct tty_driver *drv = NULL;
+	struct tty_struct *tty = NULL;
+	char *szX64Buf = NULL;
+	size_t cbX64Buf = strlen(szBuf) + 2;
+
+	szX64Buf = kmalloc(cbX64Buf, GFP_KERNEL);
+	if (!szX64Buf) {
+		err = -ENOMEM;
+		goto Error;
+	}
+
+	mutex_lock(&tty_mutex);
+	list_for_each_entry(drv, &tty_drivers, tty_drivers) {
+		if (strcmp(drv->name, "ttyS")) {
+		    continue;
+		}
+		if (index < 0 || index >= drv->num) {
+		    continue;
+		}
+		if (NULL == drv->ttys || NULL == drv->ttys[index]) {
+		    continue;
+		}
+		tty = drv->ttys[index];
+	}
+	if (!IS_ERR(tty))
+		tty_kref_get(tty);
+	else
+		tty = NULL;
+	mutex_unlock(&tty_mutex);
+
+	if (!tty) {
+		err = -ENODEV;
+		goto Error;
+	}
+
+	memset(szX64Buf, 0, cbX64Buf);
+	snprintf(szX64Buf, cbX64Buf, "%c%s", '-', szBuf);
+
+	syno_uart_write(tty->port, szX64Buf, strlen(szX64Buf));
+
+	mutex_lock(&tty_mutex);
+	tty_kref_put(tty);
+	mutex_unlock(&tty_mutex);
+
+	err = 0;
+Error:
+	if (szX64Buf)
+		kfree(szX64Buf);
+	return err;
+}
+EXPORT_SYMBOL(syno_ttys_write);
+#endif /* MY_ABC_HERE && MY_ABC_HERE */
 
 struct class *tty_class;
 
@@ -3643,6 +3772,7 @@ void console_sysfs_notify(void)
  */
 int __init tty_init(void)
 {
+	tty_sysctl_init();
 	cdev_init(&tty_cdev, &tty_fops);
 	if (cdev_add(&tty_cdev, MKDEV(TTYAUX_MAJOR, 0), 1) ||
 	    register_chrdev_region(MKDEV(TTYAUX_MAJOR, 0), 1, "/dev/tty") < 0)

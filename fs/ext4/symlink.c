@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  *  linux/fs/ext4/symlink.c
  *
@@ -45,7 +48,7 @@ static const char *ext4_encrypted_follow_link(struct dentry *dentry, void **cook
 		cpage = read_mapping_page(inode->i_mapping, 0, NULL);
 		if (IS_ERR(cpage))
 			return ERR_CAST(cpage);
-		caddr = kmap(cpage);
+		caddr = page_address(cpage);
 		caddr[size] = 0;
 	}
 
@@ -75,21 +78,24 @@ static const char *ext4_encrypted_follow_link(struct dentry *dentry, void **cook
 	/* Null-terminate the name */
 	if (res <= plen)
 		paddr[res] = '\0';
-	if (cpage) {
-		kunmap(cpage);
+	if (cpage)
 		page_cache_release(cpage);
-	}
 	return *cookie = paddr;
 errout:
-	if (cpage) {
-		kunmap(cpage);
+	if (cpage)
 		page_cache_release(cpage);
-	}
 	kfree(paddr);
 	return ERR_PTR(res);
 }
 
 const struct inode_operations ext4_encrypted_symlink_inode_operations = {
+#ifdef MY_ABC_HERE
+	.syno_getattr	= ext4_syno_getattr,
+#endif /* MY_ABC_HERE */
+#ifdef MY_ABC_HERE
+	.syno_get_archive_ver = ext4_syno_get_archive_ver,
+	.syno_set_archive_ver = ext4_syno_set_archive_ver,
+#endif /* MY_ABC_HERE */
 	.readlink	= generic_readlink,
 	.follow_link    = ext4_encrypted_follow_link,
 	.put_link       = kfree_put_link,
@@ -102,6 +108,13 @@ const struct inode_operations ext4_encrypted_symlink_inode_operations = {
 #endif
 
 const struct inode_operations ext4_symlink_inode_operations = {
+#ifdef MY_ABC_HERE
+	.syno_getattr	= ext4_syno_getattr,
+#endif /* MY_ABC_HERE */
+#ifdef MY_ABC_HERE
+	.syno_get_archive_ver = ext4_syno_get_archive_ver,
+	.syno_set_archive_ver = ext4_syno_set_archive_ver,
+#endif /* MY_ABC_HERE */
 	.readlink	= generic_readlink,
 	.follow_link	= page_follow_link_light,
 	.put_link	= page_put_link,
@@ -113,6 +126,13 @@ const struct inode_operations ext4_symlink_inode_operations = {
 };
 
 const struct inode_operations ext4_fast_symlink_inode_operations = {
+#ifdef MY_ABC_HERE
+	.syno_getattr	= ext4_syno_getattr,
+#endif /* MY_ABC_HERE */
+#ifdef MY_ABC_HERE
+	.syno_get_archive_ver = ext4_syno_get_archive_ver,
+	.syno_set_archive_ver = ext4_syno_set_archive_ver,
+#endif /* MY_ABC_HERE */
 	.readlink	= generic_readlink,
 	.follow_link    = simple_follow_link,
 	.setattr	= ext4_setattr,
@@ -121,3 +141,8 @@ const struct inode_operations ext4_fast_symlink_inode_operations = {
 	.listxattr	= ext4_listxattr,
 	.removexattr	= generic_removexattr,
 };
+#ifdef MY_ABC_HERE
+const struct file_operations ext4_symlink_file_operations = {
+	.unlocked_ioctl = ext4_symlink_ioctl,
+};
+#endif

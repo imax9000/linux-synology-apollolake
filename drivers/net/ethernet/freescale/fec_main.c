@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  * Fast Ethernet Controller (FEC) driver for Motorola MPC8xx.
  * Copyright (c) 1997 Dan Malek (dmalek@jlc.net)
@@ -48,6 +51,9 @@
 #include <linux/irq.h>
 #include <linux/clk.h>
 #include <linux/platform_device.h>
+#if defined(MY_DEF_HERE)
+#include <linux/mdio.h>
+#endif /* MY_DEF_HERE */
 #include <linux/phy.h>
 #include <linux/fec.h>
 #include <linux/of.h>
@@ -209,7 +215,11 @@ MODULE_PARM_DESC(macaddr, "FEC Ethernet MAC address");
 
 #define COPYBREAK_DEFAULT	256
 
+#if defined(MY_DEF_HERE)
+//do nothing
+#else /* MY_DEF_HERE */
 #define TSO_HEADER_SIZE		128
+#endif /* MY_DEF_HERE */
 /* Max number of allowed TCP segments for software TSO */
 #define FEC_MAX_TSO_SEGS	100
 #define FEC_MAX_SKB_DESCS	(FEC_MAX_TSO_SEGS * 2 + MAX_SKB_FRAGS)
@@ -944,11 +954,11 @@ fec_restart(struct net_device *ndev)
 	 * enet-mac reset will reset mac address registers too,
 	 * so need to reconfigure it.
 	 */
-	if (fep->quirks & FEC_QUIRK_ENET_MAC) {
-		memcpy(&temp_mac, ndev->dev_addr, ETH_ALEN);
-		writel(cpu_to_be32(temp_mac[0]), fep->hwp + FEC_ADDR_LOW);
-		writel(cpu_to_be32(temp_mac[1]), fep->hwp + FEC_ADDR_HIGH);
-	}
+	memcpy(&temp_mac, ndev->dev_addr, ETH_ALEN);
+	writel((__force u32)cpu_to_be32(temp_mac[0]),
+	       fep->hwp + FEC_ADDR_LOW);
+	writel((__force u32)cpu_to_be32(temp_mac[1]),
+	       fep->hwp + FEC_ADDR_HIGH);
 
 	/* Clear any outstanding interrupt. */
 	writel(0xffffffff, fep->hwp + FEC_IEVENT);
@@ -1557,9 +1567,15 @@ fec_enet_rx(struct net_device *ndev, int budget)
 	struct fec_enet_private *fep = netdev_priv(ndev);
 
 	for_each_set_bit(queue_id, &fep->work_rx, FEC_ENET_MAX_RX_QS) {
-		clear_bit(queue_id, &fep->work_rx);
-		pkt_received += fec_enet_rx_queue(ndev,
+		int ret;
+
+		ret = fec_enet_rx_queue(ndev,
 					budget - pkt_received, queue_id);
+
+		if (ret < budget - pkt_received)
+			clear_bit(queue_id, &fep->work_rx);
+
+		pkt_received += ret;
 	}
 	return pkt_received;
 }
@@ -1926,11 +1942,15 @@ static int fec_enet_mii_probe(struct net_device *ndev)
 	} else {
 		/* check for attached phy */
 		for (phy_id = 0; (phy_id < PHY_MAX_ADDR); phy_id++) {
+#if defined(MY_DEF_HERE)
+			if (!mdiobus_is_registered_device(fep->mii_bus, phy_id))
+#else /* MY_DEF_HERE */
 			if ((fep->mii_bus->phy_mask & (1 << phy_id)))
 				continue;
 			if (fep->mii_bus->phy_map[phy_id] == NULL)
 				continue;
 			if (fep->mii_bus->phy_map[phy_id]->phy_id == 0)
+#endif /* MY_DEF_HERE */
 				continue;
 			if (dev_id--)
 				continue;
@@ -1972,9 +1992,13 @@ static int fec_enet_mii_probe(struct net_device *ndev)
 	fep->link = 0;
 	fep->full_duplex = 0;
 
+#if defined(MY_DEF_HERE)
+	phy_attached_info(phy_dev);
+#else /* MY_DEF_HERE */
 	netdev_info(ndev, "Freescale FEC PHY driver [%s] (mii_bus:phy_addr=%s, irq=%d)\n",
 		    fep->phy_dev->drv->name, dev_name(&fep->phy_dev->dev),
 		    fep->phy_dev->irq);
+#endif /* MY_DEF_HERE */
 
 	return 0;
 }
@@ -1985,7 +2009,11 @@ static int fec_enet_mii_init(struct platform_device *pdev)
 	struct net_device *ndev = platform_get_drvdata(pdev);
 	struct fec_enet_private *fep = netdev_priv(ndev);
 	struct device_node *node;
+#if defined(MY_DEF_HERE)
+	int err = -ENXIO;
+#else /* MY_DEF_HERE */
 	int err = -ENXIO, i;
+#endif /* MY_DEF_HERE */
 	u32 mii_speed, holdtime;
 
 	/*
@@ -2067,6 +2095,9 @@ static int fec_enet_mii_init(struct platform_device *pdev)
 	fep->mii_bus->priv = fep;
 	fep->mii_bus->parent = &pdev->dev;
 
+#if defined(MY_DEF_HERE)
+//do nothing
+#else /* MY_DEF_HERE */
 	fep->mii_bus->irq = kmalloc(sizeof(int) * PHY_MAX_ADDR, GFP_KERNEL);
 	if (!fep->mii_bus->irq) {
 		err = -ENOMEM;
@@ -2075,6 +2106,7 @@ static int fec_enet_mii_init(struct platform_device *pdev)
 
 	for (i = 0; i < PHY_MAX_ADDR; i++)
 		fep->mii_bus->irq[i] = PHY_POLL;
+#endif /* MY_DEF_HERE */
 
 	node = of_get_child_by_name(pdev->dev.of_node, "mdio");
 	if (node) {
@@ -2085,7 +2117,11 @@ static int fec_enet_mii_init(struct platform_device *pdev)
 	}
 
 	if (err)
+#if defined(MY_DEF_HERE)
+		goto err_out_free_mdiobus;
+#else /* MY_DEF_HERE */
 		goto err_out_free_mdio_irq;
+#endif /* MY_DEF_HERE */
 
 	mii_cnt++;
 
@@ -2095,8 +2131,12 @@ static int fec_enet_mii_init(struct platform_device *pdev)
 
 	return 0;
 
+#if defined(MY_DEF_HERE)
+//do nothing
+#else /* MY_DEF_HERE */
 err_out_free_mdio_irq:
 	kfree(fep->mii_bus->irq);
+#endif /* MY_DEF_HERE */
 err_out_free_mdiobus:
 	mdiobus_free(fep->mii_bus);
 err_out:
@@ -2107,7 +2147,11 @@ static void fec_enet_mii_remove(struct fec_enet_private *fep)
 {
 	if (--mii_cnt == 0) {
 		mdiobus_unregister(fep->mii_bus);
+#if defined(MY_DEF_HERE)
+//do nothing
+#else /* MY_DEF_HERE */
 		kfree(fep->mii_bus->irq);
+#endif /* MY_DEF_HERE */
 		mdiobus_free(fep->mii_bus);
 	}
 }
@@ -2962,6 +3006,7 @@ static void set_multicast_list(struct net_device *ndev)
 	struct netdev_hw_addr *ha;
 	unsigned int i, bit, data, crc, tmp;
 	unsigned char hash;
+	unsigned int hash_high = 0, hash_low = 0;
 
 	if (ndev->flags & IFF_PROMISC) {
 		tmp = readl(fep->hwp + FEC_R_CNTRL);
@@ -2984,11 +3029,7 @@ static void set_multicast_list(struct net_device *ndev)
 		return;
 	}
 
-	/* Clear filter and add the addresses in hash register
-	 */
-	writel(0, fep->hwp + FEC_GRP_HASH_TABLE_HIGH);
-	writel(0, fep->hwp + FEC_GRP_HASH_TABLE_LOW);
-
+	/* Add the addresses in hash register */
 	netdev_for_each_mc_addr(ha, ndev) {
 		/* calculate crc32 value of mac address */
 		crc = 0xffffffff;
@@ -3006,16 +3047,14 @@ static void set_multicast_list(struct net_device *ndev)
 		 */
 		hash = (crc >> (32 - HASH_BITS)) & 0x3f;
 
-		if (hash > 31) {
-			tmp = readl(fep->hwp + FEC_GRP_HASH_TABLE_HIGH);
-			tmp |= 1 << (hash - 32);
-			writel(tmp, fep->hwp + FEC_GRP_HASH_TABLE_HIGH);
-		} else {
-			tmp = readl(fep->hwp + FEC_GRP_HASH_TABLE_LOW);
-			tmp |= 1 << hash;
-			writel(tmp, fep->hwp + FEC_GRP_HASH_TABLE_LOW);
-		}
+		if (hash > 31)
+			hash_high |= 1 << (hash - 32);
+		else
+			hash_low |= 1 << hash;
 	}
+
+	writel(hash_high, fep->hwp + FEC_GRP_HASH_TABLE_HIGH);
+	writel(hash_low, fep->hwp + FEC_GRP_HASH_TABLE_LOW);
 }
 
 /* Set a MAC change in hardware. */
@@ -3538,6 +3577,8 @@ fec_drv_remove(struct platform_device *pdev)
 	fec_enet_mii_remove(fep);
 	if (fep->reg_phy)
 		regulator_disable(fep->reg_phy);
+	pm_runtime_put(&pdev->dev);
+	pm_runtime_disable(&pdev->dev);
 	of_node_put(fep->phy_node);
 	free_netdev(ndev);
 

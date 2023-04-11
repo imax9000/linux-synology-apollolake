@@ -26,7 +26,8 @@ config DEBUG_PINCTRL
 
 config PINCTRL_ADI2
 	bool "ADI pin controller driver"
-	depends on BLACKFIN
+	depends on (BF54x || BF60x)
+	depends on !GPIO_ADI
 	select PINMUX
 	select IRQ_DOMAIN
 	help
@@ -253,6 +254,9 @@ source "drivers/pinctrl/intel/Kconfig"
 source "drivers/pinctrl/mvebu/Kconfig"
 source "drivers/pinctrl/nomadik/Kconfig"
 source "drivers/pinctrl/qcom/Kconfig"
+if SYNO_LSP_RTD129X
+source "drivers/pinctrl/realtek/Kconfig"
+endif # SYNO_LSP_RTD129X
 source "drivers/pinctrl/samsung/Kconfig"
 source "drivers/pinctrl/sh-pfc/Kconfig"
 source "drivers/pinctrl/spear/Kconfig"
@@ -260,6 +264,9 @@ source "drivers/pinctrl/sunxi/Kconfig"
 source "drivers/pinctrl/uniphier/Kconfig"
 source "drivers/pinctrl/vt8500/Kconfig"
 source "drivers/pinctrl/mediatek/Kconfig"
+if SYNO_LSP_RTD1619
+source "drivers/pinctrl/realtek/Kconfig"
+endif # SYNO_LSP_RTD1619
 
 config PINCTRL_XWAY
 	bool

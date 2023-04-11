@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  * INET		An implementation of the TCP/IP protocol suite for the LINUX
  *		operating system.  INET is implemented using the  BSD Socket
@@ -266,8 +269,19 @@ int eth_prepare_mac_addr_change(struct net_device *dev, void *p)
 {
 	struct sockaddr *addr = p;
 
+#ifdef MY_ABC_HERE
+	/**
+	 * In linux-2.6.24, kernel call dev->set_mac_address() directly to
+	 * set mac address. But in linux-2.6.32, kernel call a middle layer
+	 * function ops->ndo_set_mac_address() to set mac address. However,
+	 * this function will call eth_mac_addr() and will check if network
+	 * interface is on or not. If network interface is running, it returns
+	 * -EBUSY and set mac address action failed.
+	 */
+#else /* MY_ABC_HERE */
 	if (!(dev->priv_flags & IFF_LIVE_ADDR_CHANGE) && netif_running(dev))
 		return -EBUSY;
+#endif /* MY_ABC_HERE */
 	if (!is_valid_ether_addr(addr->sa_data))
 		return -EADDRNOTAVAIL;
 	return 0;
@@ -353,6 +367,7 @@ void ether_setup(struct net_device *dev)
 	dev->header_ops		= &eth_header_ops;
 	dev->type		= ARPHRD_ETHER;
 	dev->hard_header_len 	= ETH_HLEN;
+	dev->min_header_len	= ETH_HLEN;
 	dev->mtu		= ETH_DATA_LEN;
 	dev->addr_len		= ETH_ALEN;
 	dev->tx_queue_len	= 1000;	/* Ethernet wants good queues */
@@ -436,7 +451,7 @@ struct sk_buff **eth_gro_receive(struct sk_buff **head,
 
 	skb_gro_pull(skb, sizeof(*eh));
 	skb_gro_postpull_rcsum(skb, eh, sizeof(*eh));
-	pp = ptype->callbacks.gro_receive(head, skb);
+	pp = call_gro_receive(ptype->callbacks.gro_receive, head, skb);
 
 out_unlock:
 	rcu_read_unlock();

@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  *  linux/fs/ext4/file.c
  *
@@ -26,10 +29,21 @@
 #include <linux/quotaops.h>
 #include <linux/pagevec.h>
 #include <linux/uio.h>
+#if defined(MY_DEF_HERE)
+#ifdef CONFIG_SPLICE_FROM_SOCKET
+#include <linux/backing-dev.h>
+#include <linux/fsnotify.h>
+#include <linux/swap.h>
+#include <net/sock.h>
+#endif
+#endif /* MY_DEF_HERE */
 #include "ext4.h"
 #include "ext4_jbd2.h"
 #include "xattr.h"
 #include "acl.h"
+#ifdef MY_ABC_HERE
+#include "syno_acl.h"
+#endif /* MY_ABC_HERE */
 
 /*
  * Called when an inode is released. Note that this is different
@@ -79,7 +93,7 @@ ext4_unaligned_aio(struct inode *inode, struct iov_iter *from, loff_t pos)
 	struct super_block *sb = inode->i_sb;
 	int blockmask = sb->s_blocksize - 1;
 
-	if (pos >= i_size_read(inode))
+	if (pos >= ALIGN(i_size_read(inode), sb->s_blocksize))
 		return 0;
 
 	if ((pos | iov_iter_alignment(from)) & blockmask)
@@ -113,7 +127,7 @@ ext4_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 		ext4_unwritten_wait(inode);
 	}
 
-	mutex_lock(&inode->i_mutex);
+	inode_lock(inode);
 	ret = generic_write_checks(iocb, from);
 	if (ret <= 0)
 		goto out;
@@ -169,7 +183,7 @@ ext4_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	}
 
 	ret = __generic_file_write_iter(iocb, from);
-	mutex_unlock(&inode->i_mutex);
+	inode_unlock(inode);
 
 	if (ret > 0) {
 		ssize_t err;
@@ -186,7 +200,7 @@ ext4_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	return ret;
 
 out:
-	mutex_unlock(&inode->i_mutex);
+	inode_unlock(inode);
 	if (aio_mutex)
 		mutex_unlock(aio_mutex);
 	return ret;
@@ -209,15 +223,18 @@ static int ext4_dax_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 {
 	int result;
 	handle_t *handle = NULL;
-	struct super_block *sb = file_inode(vma->vm_file)->i_sb;
+	struct inode *inode = file_inode(vma->vm_file);
+	struct super_block *sb = inode->i_sb;
 	bool write = vmf->flags & FAULT_FLAG_WRITE;
 
 	if (write) {
 		sb_start_pagefault(sb);
 		file_update_time(vma->vm_file);
+		down_read(&EXT4_I(inode)->i_mmap_sem);
 		handle = ext4_journal_start_sb(sb, EXT4_HT_WRITE_PAGE,
 						EXT4_DATA_TRANS_BLOCKS(sb));
-	}
+	} else
+		down_read(&EXT4_I(inode)->i_mmap_sem);
 
 	if (IS_ERR(handle))
 		result = VM_FAULT_SIGBUS;
@@ -228,8 +245,10 @@ static int ext4_dax_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 	if (write) {
 		if (!IS_ERR(handle))
 			ext4_journal_stop(handle);
+		up_read(&EXT4_I(inode)->i_mmap_sem);
 		sb_end_pagefault(sb);
-	}
+	} else
+		up_read(&EXT4_I(inode)->i_mmap_sem);
 
 	return result;
 }
@@ -246,10 +265,12 @@ static int ext4_dax_pmd_fault(struct vm_area_struct *vma, unsigned long addr,
 	if (write) {
 		sb_start_pagefault(sb);
 		file_update_time(vma->vm_file);
+		down_read(&EXT4_I(inode)->i_mmap_sem);
 		handle = ext4_journal_start_sb(sb, EXT4_HT_WRITE_PAGE,
 				ext4_chunk_trans_blocks(inode,
 							PMD_SIZE / PAGE_SIZE));
-	}
+	} else
+		down_read(&EXT4_I(inode)->i_mmap_sem);
 
 	if (IS_ERR(handle))
 		result = VM_FAULT_SIGBUS;
@@ -260,30 +281,71 @@ static int ext4_dax_pmd_fault(struct vm_area_struct *vma, unsigned long addr,
 	if (write) {
 		if (!IS_ERR(handle))
 			ext4_journal_stop(handle);
+		up_read(&EXT4_I(inode)->i_mmap_sem);
 		sb_end_pagefault(sb);
-	}
+	} else
+		up_read(&EXT4_I(inode)->i_mmap_sem);
 
 	return result;
 }
 
 static int ext4_dax_mkwrite(struct vm_area_struct *vma, struct vm_fault *vmf)
 {
-	return dax_mkwrite(vma, vmf, ext4_get_block_dax,
-				ext4_end_io_unwritten);
+	int err;
+	struct inode *inode = file_inode(vma->vm_file);
+
+	sb_start_pagefault(inode->i_sb);
+	file_update_time(vma->vm_file);
+	down_read(&EXT4_I(inode)->i_mmap_sem);
+	err = __dax_mkwrite(vma, vmf, ext4_get_block_dax,
+			    ext4_end_io_unwritten);
+	up_read(&EXT4_I(inode)->i_mmap_sem);
+	sb_end_pagefault(inode->i_sb);
+
+	return err;
+}
+
+/*
+ * Handle write fault for VM_MIXEDMAP mappings. Similarly to ext4_dax_mkwrite()
+ * handler we check for races agaist truncate. Note that since we cycle through
+ * i_mmap_sem, we are sure that also any hole punching that began before we
+ * were called is finished by now and so if it included part of the file we
+ * are working on, our pte will get unmapped and the check for pte_same() in
+ * wp_pfn_shared() fails. Thus fault gets retried and things work out as
+ * desired.
+ */
+static int ext4_dax_pfn_mkwrite(struct vm_area_struct *vma,
+				struct vm_fault *vmf)
+{
+	struct inode *inode = file_inode(vma->vm_file);
+	struct super_block *sb = inode->i_sb;
+	int ret = VM_FAULT_NOPAGE;
+	loff_t size;
+
+	sb_start_pagefault(sb);
+	file_update_time(vma->vm_file);
+	down_read(&EXT4_I(inode)->i_mmap_sem);
+	size = (i_size_read(inode) + PAGE_SIZE - 1) >> PAGE_SHIFT;
+	if (vmf->pgoff >= size)
+		ret = VM_FAULT_SIGBUS;
+	up_read(&EXT4_I(inode)->i_mmap_sem);
+	sb_end_pagefault(sb);
+
+	return ret;
 }
 
 static const struct vm_operations_struct ext4_dax_vm_ops = {
 	.fault		= ext4_dax_fault,
 	.pmd_fault	= ext4_dax_pmd_fault,
 	.page_mkwrite	= ext4_dax_mkwrite,
-	.pfn_mkwrite	= dax_pfn_mkwrite,
+	.pfn_mkwrite	= ext4_dax_pfn_mkwrite,
 };
 #else
 #define ext4_dax_vm_ops	ext4_file_vm_ops
 #endif
 
 static const struct vm_operations_struct ext4_file_vm_ops = {
-	.fault		= filemap_fault,
+	.fault		= ext4_filemap_fault,
 	.map_pages	= filemap_map_pages,
 	.page_mkwrite   = ext4_page_mkwrite,
 };
@@ -369,6 +431,251 @@ static int ext4_file_open(struct inode * inode, struct file * filp)
 	return dquot_file_open(inode, filp);
 }
 
+#if defined(MY_DEF_HERE)
+#ifdef CONFIG_SPLICE_FROM_SOCKET
+ssize_t ext4_splice_from_socket(struct file *file, struct socket *sock,
+				loff_t __user *ppos, size_t count_req)
+{
+	struct address_space *mapping = file->f_mapping;
+	const struct address_space_operations *a_ops = mapping->a_ops;
+	struct inode *inode = mapping->host;
+	int err = 0, remaining;
+	struct kvec iov;
+	struct msghdr msg = { 0 };
+	size_t written = 0, verified_sz;
+	struct kiocb iocb;
+	struct iov_iter iter;
+
+	init_sync_kiocb(&iocb, file);
+
+	if (unlikely(iocb.ki_flags & IOCB_DIRECT))
+		return -EINVAL;
+
+	if (copy_from_user(&iocb.ki_pos, ppos, sizeof(loff_t)))
+		return -EFAULT;
+
+	/* minimal init of iter, used by write_check only */
+	iov_iter_init(&iter, WRITE, NULL, 0, count_req);
+
+	file_start_write(file);
+
+	mutex_lock(&inode->i_mutex);
+	verified_sz = generic_write_checks(&iocb, &iter);
+	if (verified_sz <= 0) {
+		pr_debug("%s: generic_write_checks err, verified_sz %zd\n",
+			 __func__, verified_sz);
+		err = verified_sz;
+		goto cleanup;
+	}
+
+	/*
+	 * If we have encountered a bitmap-format file, the size limit
+	 * is smaller than s_maxbytes, which is for extent-mapped files.
+	 */
+	if (!(ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS))) {
+		struct ext4_sb_info *sbi = EXT4_SB(inode->i_sb);
+
+		if (iocb.ki_pos >= sbi->s_bitmap_maxbytes) {
+			err = -EFBIG;
+			goto cleanup;
+		}
+		iov_iter_truncate(&iter, sbi->s_bitmap_maxbytes - iocb.ki_pos);
+	}
+
+	/* We can write back this queue in page reclaim */
+	current->backing_dev_info = inode_to_bdi(inode);
+
+	err = file_remove_privs(file);
+	if (err) {
+		pr_debug("%s: file_remove_privs, err %d\n", __func__, err);
+		goto cleanup;
+	}
+
+	err = file_update_time(file);
+	if (err) {
+		pr_debug("%s: file_update_time, err %d\n", __func__, err);
+		goto cleanup;
+	}
+
+	remaining = iter.count;
+
+	while (remaining > 0) {
+		unsigned long offset;	/* Offset into pagecache page */
+		unsigned long bytes;	/* Bytes to write to page */
+		int copied;		/* Bytes copied from net */
+		struct page *page;
+		void *fsdata;
+		long rcvtimeo;
+		char *paddr;
+
+		offset = (iocb.ki_pos & (PAGE_CACHE_SIZE - 1));
+		bytes = min_t(unsigned long, PAGE_CACHE_SIZE - offset,
+			      remaining);
+
+		err = a_ops->write_begin(file, mapping, iocb.ki_pos,
+					 bytes, AOP_FLAG_UNINTERRUPTIBLE,
+					 &page, &fsdata);
+		if (unlikely(err)) {
+			pr_debug("%s: write_begin err %d\n", __func__, err);
+			break;
+		}
+
+		if (mapping_writably_mapped(mapping))
+			flush_dcache_page(page);
+
+		/* save page address for partial recvmsg case */
+		paddr = kmap(page) + offset;
+		iov.iov_base = paddr;
+		iov.iov_len = bytes;
+
+		rcvtimeo = sock->sk->sk_rcvtimeo;
+		sock->sk->sk_rcvtimeo = 5 * HZ;
+
+		/* IOV is ready, receive the data from socket now */
+		copied = kernel_recvmsg(sock, &msg, &iov, 1,
+					bytes, MSG_WAITALL);
+
+		sock->sk->sk_rcvtimeo = rcvtimeo;
+
+		/* kernel_recvmsg returned an error or no data */
+		if (unlikely(copied <= 0)) {
+			kunmap(page);
+
+			/* update error and quit */
+			err = copied;
+
+			pr_debug("%s: kernel_recvmsg err %d\n", __func__, err);
+
+			/* release pagecache */
+			a_ops->write_end(file, mapping, iocb.ki_pos,
+					 bytes, 0, page, fsdata);
+			break;
+		}
+
+		if (unlikely(copied != bytes)) {
+			char *kaddr;
+			char *buff;
+
+			/* recvmsg failed to write the requested bytes, this
+			 * can happen from NEED_RESCHED signal or socket
+			 * timeout. Partial writes are not allowed so we write
+			 * the recvmsg portion and finish splice, this will
+			 * force the caller to redo the remaining.
+			 */
+
+			pr_debug("%s: partial bytes %ld copied %d\n",
+				 __func__, bytes, copied);
+
+			/* alloc buffer for recvmsg data */
+			buff = kmalloc(copied, GFP_KERNEL);
+			if (unlikely(!buff)) {
+				err = -ENOMEM;
+				break;
+			}
+			/* copy recvmsg bytes to buffer */
+			memcpy(buff, paddr, copied);
+
+			/* and free the partial page */
+			kunmap(page);
+			err = a_ops->write_end(file, mapping, iocb.ki_pos,
+					       bytes, 0, page, fsdata);
+			if (unlikely(err < 0)) {
+				kfree(buff);
+				pr_debug("%s: write_end partial, err %d\n",
+					 __func__, err);
+				break;
+			}
+
+			/* allocate a new page with recvmsg size */
+			err = a_ops->write_begin(file, mapping, iocb.ki_pos, copied,
+						 AOP_FLAG_UNINTERRUPTIBLE,
+						 &page, &fsdata);
+			if (unlikely(err)) {
+				kfree(buff);
+				pr_debug("%s: write_begin partial, err %d\n",
+					 __func__, err);
+				break;
+			}
+
+			if (mapping_writably_mapped(mapping))
+				flush_dcache_page(page);
+
+			/* copy the buffer to new page */
+			kaddr = kmap_atomic(page) + offset;
+			memcpy(kaddr, buff, copied);
+
+			kfree(buff);
+			kunmap_atomic(kaddr);
+
+			/* and write it */
+			mark_page_accessed(page);
+			err = a_ops->write_end(file, mapping, iocb.ki_pos,
+					       copied, copied, page, fsdata);
+			if (unlikely(err < 0)) {
+				pr_debug("%s: write_end partial, err %d\n",
+					 __func__, err);
+				break;
+			}
+
+			/* update written counters */
+			iocb.ki_pos += copied;
+			written += copied;
+
+			WARN_ON(copied != err);
+
+			break;
+		}
+
+		kunmap(page);
+
+		/* page written w/o recvmsg error */
+		mark_page_accessed(page);
+		err = a_ops->write_end(file, mapping, iocb.ki_pos, bytes,
+				       copied, page, fsdata);
+
+		if (unlikely(err < 0)) {
+			pr_debug("%s: write_end, err %d\n", __func__, err);
+			break;
+		}
+
+		/* write success, update counters */
+		remaining -= copied;
+		iocb.ki_pos += copied;
+		written += copied;
+
+		if (WARN_ON(copied != err))
+			break;
+	}
+
+	if (written > 0)
+		balance_dirty_pages_ratelimited(mapping);
+
+cleanup:
+	current->backing_dev_info = NULL;
+
+	mutex_unlock(&inode->i_mutex);
+
+	if (written > 0) {
+		err = generic_write_sync(file, iocb.ki_pos - written, written);
+		if (err < 0) {
+			written = 0;
+			goto done;
+		}
+		fsnotify_modify(file);
+
+		if (copy_to_user(ppos, &iocb.ki_pos, sizeof(loff_t))) {
+			written = 0;
+			err = -EFAULT;
+		}
+	}
+done:
+	file_end_write(file);
+
+	return written ? written : err;
+}
+#endif
+#endif /* MY_DEF_HERE */
+
 /*
  * Here we use ext4_map_blocks() to get a block mapping for a extent-based
  * file rather than ext4_ext_walk_space() because we can introduce
@@ -412,49 +719,29 @@ static int ext4_find_unwritten_pgoff(struct inode *inode,
 		int i, num;
 		unsigned long nr_pages;
 
-		num = min_t(pgoff_t, end - index, PAGEVEC_SIZE);
+		num = min_t(pgoff_t, end - index, PAGEVEC_SIZE - 1) + 1;
 		nr_pages = pagevec_lookup(&pvec, inode->i_mapping, index,
 					  (pgoff_t)num);
-		if (nr_pages == 0) {
-			if (whence == SEEK_DATA)
-				break;
-
-			BUG_ON(whence != SEEK_HOLE);
-			/*
-			 * If this is the first time to go into the loop and
-			 * offset is not beyond the end offset, it will be a
-			 * hole at this offset
-			 */
-			if (lastoff == startoff || lastoff < endoff)
-				found = 1;
+		if (nr_pages == 0)
 			break;
-		}
-
-		/*
-		 * If this is the first time to go into the loop and
-		 * offset is smaller than the first page offset, it will be a
-		 * hole at this offset.
-		 */
-		if (lastoff == startoff && whence == SEEK_HOLE &&
-		    lastoff < page_offset(pvec.pages[0])) {
-			found = 1;
-			break;
-		}
 
 		for (i = 0; i < nr_pages; i++) {
 			struct page *page = pvec.pages[i];
 			struct buffer_head *bh, *head;
 
 			/*
-			 * If the current offset is not beyond the end of given
-			 * range, it will be a hole.
+			 * If current offset is smaller than the page offset,
+			 * there is a hole at this offset.
 			 */
-			if (lastoff < endoff && whence == SEEK_HOLE &&
-			    page->index > end) {
+			if (whence == SEEK_HOLE && lastoff < endoff &&
+			    lastoff < page_offset(pvec.pages[i])) {
 				found = 1;
 				*offset = lastoff;
 				goto out;
 			}
+
+			if (page->index > end)
+				goto out;
 
 			lock_page(page);
 
@@ -472,6 +759,8 @@ static int ext4_find_unwritten_pgoff(struct inode *inode,
 				lastoff = page_offset(page);
 				bh = head = page_buffers(page);
 				do {
+					if (lastoff + bh->b_size <= startoff)
+						goto next;
 					if (buffer_uptodate(bh) ||
 					    buffer_unwritten(bh)) {
 						if (whence == SEEK_DATA)
@@ -486,6 +775,7 @@ static int ext4_find_unwritten_pgoff(struct inode *inode,
 						unlock_page(page);
 						goto out;
 					}
+next:
 					lastoff += bh->b_size;
 					bh = bh->b_this_page;
 				} while (bh != head);
@@ -495,20 +785,18 @@ static int ext4_find_unwritten_pgoff(struct inode *inode,
 			unlock_page(page);
 		}
 
-		/*
-		 * The no. of pages is less than our desired, that would be a
-		 * hole in there.
-		 */
-		if (nr_pages < num && whence == SEEK_HOLE) {
-			found = 1;
-			*offset = lastoff;
+		/* The no. of pages is less than our desired, we are done. */
+		if (nr_pages < num)
 			break;
-		}
 
 		index = pvec.pages[i - 1]->index + 1;
 		pagevec_release(&pvec);
 	} while (index <= end);
 
+	if (whence == SEEK_HOLE && lastoff < endoff) {
+		found = 1;
+		*offset = lastoff;
+	}
 out:
 	pagevec_release(&pvec);
 	return found;
@@ -527,10 +815,10 @@ static loff_t ext4_seek_data(struct file *file, loff_t offset, loff_t maxsize)
 	int blkbits;
 	int ret = 0;
 
-	mutex_lock(&inode->i_mutex);
+	inode_lock(inode);
 
 	isize = i_size_read(inode);
-	if (offset >= isize) {
+	if (offset < 0 || offset >= isize) {
 		mutex_unlock(&inode->i_mutex);
 		return -ENXIO;
 	}
@@ -579,7 +867,7 @@ static loff_t ext4_seek_data(struct file *file, loff_t offset, loff_t maxsize)
 		dataoff = (loff_t)last << blkbits;
 	} while (last <= end);
 
-	mutex_unlock(&inode->i_mutex);
+	inode_unlock(inode);
 
 	if (dataoff > isize)
 		return -ENXIO;
@@ -600,10 +888,10 @@ static loff_t ext4_seek_hole(struct file *file, loff_t offset, loff_t maxsize)
 	int blkbits;
 	int ret = 0;
 
-	mutex_lock(&inode->i_mutex);
+	inode_lock(inode);
 
 	isize = i_size_read(inode);
-	if (offset >= isize) {
+	if (offset < 0 || offset >= isize) {
 		mutex_unlock(&inode->i_mutex);
 		return -ENXIO;
 	}
@@ -655,7 +943,7 @@ static loff_t ext4_seek_hole(struct file *file, loff_t offset, loff_t maxsize)
 		break;
 	} while (last <= end);
 
-	mutex_unlock(&inode->i_mutex);
+	inode_unlock(inode);
 
 	if (holeoff > isize)
 		holeoff = isize;
@@ -707,18 +995,41 @@ const struct file_operations ext4_file_operations = {
 	.fsync		= ext4_sync_file,
 	.splice_read	= generic_file_splice_read,
 	.splice_write	= iter_file_splice_write,
+#if defined(CONFIG_SENDFILE_PATCH)
+	.splice_from_socket = generic_splice_from_socket,
+#endif
+#if defined(MY_DEF_HERE)
+#ifdef CONFIG_SPLICE_FROM_SOCKET
+	.splice_from_socket = ext4_splice_from_socket,
+#endif
+#endif /* MY_DEF_HERE */
 	.fallocate	= ext4_fallocate,
 };
 
 const struct inode_operations ext4_file_inode_operations = {
+#ifdef MY_ABC_HERE
+	.syno_getattr	= ext4_syno_getattr,
+#endif /* MY_ABC_HERE */
+#ifdef MY_ABC_HERE
+	.syno_get_archive_ver	= ext4_syno_get_archive_ver,
+	.syno_set_archive_ver	= ext4_syno_set_archive_ver,
+#endif /* MY_ABC_HERE */
+#ifdef MY_ABC_HERE
+	.syno_pattern_check = ext4_syno_pattern_check,
+#endif /* MY_ABC_HERE */
 	.setattr	= ext4_setattr,
 	.getattr	= ext4_getattr,
 	.setxattr	= generic_setxattr,
 	.getxattr	= generic_getxattr,
 	.listxattr	= ext4_listxattr,
 	.removexattr	= generic_removexattr,
+#ifdef MY_ABC_HERE
+	.syno_acl_get   = ext4_get_syno_acl,
+	.syno_acl_set	= ext4_set_syno_acl,
+#else
 	.get_acl	= ext4_get_acl,
 	.set_acl	= ext4_set_acl,
+#endif /* MY_ABC_HERE */
 	.fiemap		= ext4_fiemap,
 };
 

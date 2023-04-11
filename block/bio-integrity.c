@@ -66,7 +66,7 @@ struct bio_integrity_payload *bio_integrity_alloc(struct bio *bio,
 	}
 
 	if (unlikely(!bip))
-		return NULL;
+		return ERR_PTR(-ENOMEM);
 
 	memset(bip, 0, sizeof(*bip));
 
@@ -89,7 +89,7 @@ struct bio_integrity_payload *bio_integrity_alloc(struct bio *bio,
 	return bip;
 err:
 	mempool_free(bip, bs->bio_integrity_pool);
-	return NULL;
+	return ERR_PTR(-ENOMEM);
 }
 EXPORT_SYMBOL(bio_integrity_alloc);
 
@@ -173,6 +173,9 @@ bool bio_integrity_enabled(struct bio *bio)
 	struct blk_integrity *bi = bdev_get_integrity(bio->bi_bdev);
 
 	if (!bio_is_rw(bio))
+		return false;
+
+	if (!bio_sectors(bio))
 		return false;
 
 	/* Already protected? */

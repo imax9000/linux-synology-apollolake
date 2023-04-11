@@ -66,7 +66,7 @@ int asix_rx_fixup_internal(struct usbnet *dev, struct sk_buff *skb,
 	 * buffer.
 	 */
 	if (rx->remaining && (rx->remaining + sizeof(u32) <= skb->len)) {
-		offset = ((rx->remaining + 1) & 0xfffe) + sizeof(u32);
+		offset = ((rx->remaining + 1) & 0xfffe);
 		rx->header = get_unaligned_le32(skb->data + offset);
 		offset = 0;
 
@@ -448,6 +448,9 @@ int asix_set_wol(struct net_device *net, struct ethtool_wolinfo *wolinfo)
 {
 	struct usbnet *dev = netdev_priv(net);
 	u8 opt = 0;
+
+	if (wolinfo->wolopts & ~(WAKE_PHY | WAKE_MAGIC))
+		return -EINVAL;
 
 	if (wolinfo->wolopts & WAKE_PHY)
 		opt |= AX_MONITOR_LINK;

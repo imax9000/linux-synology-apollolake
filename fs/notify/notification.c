@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  *  Copyright (C) 2008 Red Hat, Inc., Eric Paris <eparis@redhat.com>
  *
@@ -46,6 +49,10 @@
 #include <linux/atomic.h>
 
 #include <linux/fsnotify_backend.h>
+#ifdef MY_ABC_HERE
+#include <linux/ratelimit.h>
+#endif /* MY_ABC_HERE */
+
 #include "fsnotify.h"
 
 static atomic_t fsnotify_sync_cookie = ATOMIC_INIT(0);
@@ -82,7 +89,8 @@ void fsnotify_destroy_event(struct fsnotify_group *group,
  * Add an event to the group notification queue.  The group can later pull this
  * event off the queue to deal with.  The function returns 0 if the event was
  * added to the queue, 1 if the event was merged with some other queued event,
- * 2 if the queue of events has overflown.
+ * 2 if the event was not queued - either the queue of events has overflown
+ * or the group is shutting down.
  */
 int fsnotify_add_event(struct fsnotify_group *group,
 		       struct fsnotify_event *event,
@@ -96,6 +104,11 @@ int fsnotify_add_event(struct fsnotify_group *group,
 
 	mutex_lock(&group->notification_mutex);
 
+	if (group->shutdown) {
+		mutex_unlock(&group->notification_mutex);
+		return 2;
+	}
+
 	if (group->q_len >= group->max_events) {
 		ret = 2;
 		/* Queue overflow event only if it isn't already queued */
@@ -104,6 +117,9 @@ int fsnotify_add_event(struct fsnotify_group *group,
 			return ret;
 		}
 		event = group->overflow_event;
+#ifdef MY_ABC_HERE
+		printk_ratelimited(KERN_WARNING "fsnotify get overflow, max queue size is %d\n", group->max_events);
+#endif /* MY_ABC_HERE */
 		goto queue;
 	}
 
@@ -115,6 +131,16 @@ int fsnotify_add_event(struct fsnotify_group *group,
 		}
 	}
 
+#ifdef MY_ABC_HERE
+	if (group->ops->fetch_name) {
+		ret = group->ops->fetch_name(event, group);
+		if (ret < 0) {
+			mutex_unlock(&group->notification_mutex);
+			return ret;
+		}
+	}
+#endif /* MY_ABC_HERE */
+
 queue:
 	group->q_len++;
 	list_add_tail(&event->list, list);
@@ -123,21 +149,6 @@ queue:
 	wake_up(&group->notification_waitq);
 	kill_fasync(&group->fsn_fa, SIGIO, POLL_IN);
 	return ret;
-}
-
-/*
- * Remove @event from group's notification queue. It is the responsibility of
- * the caller to destroy the event.
- */
-void fsnotify_remove_event(struct fsnotify_group *group,
-			   struct fsnotify_event *event)
-{
-	mutex_lock(&group->notification_mutex);
-	if (!list_empty(&event->list)) {
-		list_del_init(&event->list);
-		group->q_len--;
-	}
-	mutex_unlock(&group->notification_mutex);
 }
 
 /*

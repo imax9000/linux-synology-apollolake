@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  * Block driver for media (i.e., flash cards)
  *
@@ -45,15 +48,14 @@
 #include <asm/uaccess.h>
 
 #include "queue.h"
-
+#ifdef MY_DEF_HERE
+#include "../../base/base.h"
+#endif /* MY_DEF_HERE */
 MODULE_ALIAS("mmc:block");
-
-#ifdef KERNEL
 #ifdef MODULE_PARAM_PREFIX
 #undef MODULE_PARAM_PREFIX
 #endif
 #define MODULE_PARAM_PREFIX "mmcblk."
-#endif
 
 #define INAND_CMD38_ARG_EXT_CSD  113
 #define INAND_CMD38_ARG_ERASE    0x00
@@ -171,11 +173,7 @@ static struct mmc_blk_data *mmc_blk_get(struct gendisk *disk)
 
 static inline int mmc_get_devidx(struct gendisk *disk)
 {
-	int devmaj = MAJOR(disk_devt(disk));
-	int devidx = MINOR(disk_devt(disk)) / perdev_minors;
-
-	if (!devmaj)
-		devidx = disk->first_minor / perdev_minors;
+	int devidx = disk->first_minor / perdev_minors;
 	return devidx;
 }
 
@@ -202,12 +200,14 @@ static ssize_t power_ro_lock_show(struct device *dev,
 	struct mmc_blk_data *md = mmc_blk_get(dev_to_disk(dev));
 	struct mmc_card *card = md->queue.card;
 	int locked = 0;
-
+#if defined(CONFIG_MMC_RTK_EMMC) && defined(CONFIG_SYNO_LSP_RTD1619)
+	locked = card->ext_csd.boot_ro_lock;
+#else /* CONFIG_MMC_RTK_EMMC && CONFIG_SYNO_LSP_RTD1619 */
 	if (card->ext_csd.boot_ro_lock & EXT_CSD_BOOT_WP_B_PERM_WP_EN)
 		locked = 2;
 	else if (card->ext_csd.boot_ro_lock & EXT_CSD_BOOT_WP_B_PWR_WP_EN)
 		locked = 1;
-
+#endif /* CONFIG_MMC_RTK_EMMC && CONFIG_SYNO_LSP_RTD1619 */
 	ret = snprintf(buf, PAGE_SIZE, "%d\n", locked);
 
 	mmc_blk_put(md);
@@ -222,18 +222,64 @@ static ssize_t power_ro_lock_store(struct device *dev,
 	struct mmc_blk_data *md, *part_md;
 	struct mmc_card *card;
 	unsigned long set;
+#if defined(CONFIG_SYNO_LSP_RTD1619)
+#ifdef CONFIG_MMC_RTK_EMMC
+	unsigned int mode=0, mode_tmp=0;
+#endif /* CONFIG_MMC_RTK_EMMC */
+#endif /* CONFIG_SYNO_LSP_RTD1619 */
 
 	if (kstrtoul(buf, 0, &set))
 		return -EINVAL;
 
+#if defined(CONFIG_MMC_RTK_EMMC) && defined(CONFIG_SYNO_LSP_RTD1619)
+	sscanf(buf,"%d",&mode);
+
+        if(mode>255 || ((mode & EXT_CSD_BOOT_WP_B_PWR_WP_EN)==0 && (mode & EXT_CSD_BOOT_WP_B_PERM_WP_EN)==0)) {
+                printk(KERN_ERR "Bad setting...\n");
+                return count;
+        }
+#else /* CONFIG_MMC_RTK_EMMC && CONFIG_SYNO_LSP_RTD1619 */
 	if (set != 1)
 		return count;
+#endif /* CONFIG_MMC_RTK_EMMC && CONFIG_SYNO_LSP_RTD1619 */
 
 	md = mmc_blk_get(dev_to_disk(dev));
 	card = md->queue.card;
 
 	mmc_get_card(card);
 
+#if defined(CONFIG_SYNO_LSP_RTD1619)
+#ifdef CONFIG_MMC_RTK_EMMC
+	if((mode & EXT_CSD_BOOT_WP_SEL)==0x0) {
+		if(mode & EXT_CSD_BOOT_WP_B_PERM_WP_EN) mode_tmp |= EXT_CSD_BOOT_WP_B_PERM_WP_EN;
+		else mode_tmp |= EXT_CSD_BOOT_WP_B_PWR_WP_EN;
+        }
+	else if((mode & EXT_CSD_BOOT_WP_SEL)==0x80){
+		if(mode & EXT_CSD_BOOT_WP_B_PERM_WP_EN) {
+			mode_tmp |= EXT_CSD_BOOT_WP_B_PERM_WP_EN;
+			mode_tmp |= EXT_CSD_BOOT_WP_SEL;
+			if(mode & EXT_CSD_BOOT_WP_PERM_SEL) mode_tmp |= EXT_CSD_BOOT_WP_PERM_SEL ;
+		}
+		else {
+			mode_tmp |= EXT_CSD_BOOT_WP_B_PWR_WP_EN;
+			mode_tmp |= EXT_CSD_BOOT_WP_SEL;
+			if(mode & EXT_CSD_BOOT_WP_PWR_SEL)  mode_tmp |= EXT_CSD_BOOT_WP_PWR_SEL ;
+		}
+	}
+#endif /* CONFIG_MMC_RTK_EMMC */
+#endif /* CONFIG_SYNO_LSP_RTD1619 */
+
+#if defined(CONFIG_MMC_RTK_EMMC) && defined(CONFIG_SYNO_LSP_RTD1619)
+	ret = mmc_switch(card, EXT_CSD_CMD_SET_NORMAL, EXT_CSD_BOOT_WP,
+				card->ext_csd.boot_ro_lock | mode_tmp,
+				card->ext_csd.part_time);
+	if (ret) {
+		if(mode & EXT_CSD_BOOT_WP_B_PERM_WP_EN) pr_err("%s: Locking boot partition ro permanently failed: %d\n", md->disk->disk_name, ret);
+		else pr_err("%s: Locking boot partition ro until next power on failed: %d\n", md->disk->disk_name, ret);
+	}
+	else
+		card->ext_csd.boot_ro_lock |= mode_tmp;
+#else /* CONFIG_MMC_RTK_EMMC && CONFIG_SYNO_LSP_RTD1619 */
 	ret = mmc_switch(card, EXT_CSD_CMD_SET_NORMAL, EXT_CSD_BOOT_WP,
 				card->ext_csd.boot_ro_lock |
 				EXT_CSD_BOOT_WP_B_PWR_WP_EN,
@@ -242,10 +288,82 @@ static ssize_t power_ro_lock_store(struct device *dev,
 		pr_err("%s: Locking boot partition ro until next power on failed: %d\n", md->disk->disk_name, ret);
 	else
 		card->ext_csd.boot_ro_lock |= EXT_CSD_BOOT_WP_B_PWR_WP_EN;
-
+#endif /* CONFIG_MMC_RTK_EMMC && CONFIG_SYNO_LSP_RTD1619 */
 	mmc_put_card(card);
 
 	if (!ret) {
+#if defined(CONFIG_MMC_RTK_EMMC) && defined(CONFIG_SYNO_LSP_RTD1619)
+		if((mode & EXT_CSD_BOOT_WP_SEL)==0x0) {
+			if(mode & EXT_CSD_BOOT_WP_B_PERM_WP_EN) printk(KERN_ERR "%s: [1] Locking boot partition ro permanently\n", md->disk->disk_name);
+			else printk(KERN_ERR "%s: Locking boot partition ro until next power on\n", md->disk->disk_name);
+			set_disk_ro(md->disk, 1);
+
+			list_for_each_entry(part_md, &md->part, part)
+				if (part_md->area_type == MMC_BLK_DATA_AREA_BOOT) {
+					if(mode & EXT_CSD_BOOT_WP_B_PERM_WP_EN) printk(KERN_ERR "%s: [1] Locking boot partition ro permanently\n", part_md->disk->disk_name);
+					else printk(KERN_ERR "%s: Locking boot partition ro until next power on\n", part_md->disk->disk_name);
+					set_disk_ro(part_md->disk, 1);
+				}
+		}
+		else {
+			if(mode & EXT_CSD_BOOT_WP_B_PERM_WP_EN) {
+				if((mode & EXT_CSD_BOOT_WP_PERM_SEL)==0x0) {
+					if (strcmp(md->disk->disk_name,"mmcblk0boot0")==0) {
+						printk(KERN_ERR "%s: Locking boot partition ro permanently\n", md->disk->disk_name);
+						set_disk_ro(md->disk, 1);
+					}
+					else {
+						list_for_each_entry(part_md, &md->part, part)
+							if (strcmp(part_md->disk->disk_name,"mmcblk0boot0")==0) {
+								printk(KERN_ERR "%s: Locking boot partition ro permanently\n", part_md->disk->disk_name);
+								set_disk_ro(part_md->disk, 1);
+							}
+					}
+				}
+				else {
+					if (strcmp(md->disk->disk_name,"mmcblk0boot1")==0) {
+						printk(KERN_ERR "%s: Locking boot partition ro permanently\n", md->disk->disk_name);
+						set_disk_ro(md->disk, 1);
+					}
+					else {
+						list_for_each_entry(part_md, &md->part, part)
+							if (strcmp(part_md->disk->disk_name,"mmcblk0boot1")==0) {
+								printk(KERN_ERR "%s: Locking boot partition ro permanently\n", part_md->disk->disk_name);
+								set_disk_ro(part_md->disk, 1);
+							}
+					}
+				}
+			}
+			else {
+				if((mode & EXT_CSD_BOOT_WP_PWR_SEL)==0x0) {
+					if (strcmp(md->disk->disk_name,"mmcblk0boot0")==0) {
+						printk(KERN_ERR "%s: Locking boot partition ro until next power on\n", md->disk->disk_name);
+						set_disk_ro(md->disk, 1);
+					}
+					else {
+						list_for_each_entry(part_md, &md->part, part)
+							if (strcmp(part_md->disk->disk_name,"mmcblk0boot0")==0) {
+								printk(KERN_ERR "%s: Locking boot partition ro until next power on\n", part_md->disk->disk_name);
+								set_disk_ro(part_md->disk, 1);
+							}
+					}
+				}
+				else {
+					if (strcmp(md->disk->disk_name,"mmcblk0boot1")==0) {
+						printk(KERN_ERR "%s: Locking boot partition ro until next power on\n", md->disk->disk_name);
+						set_disk_ro(md->disk, 1);
+					}
+					else {
+						list_for_each_entry(part_md, &md->part, part)
+							if (strcmp(part_md->disk->disk_name,"mmcblk0boot1")==0) {
+								printk(KERN_ERR "%s: Locking boot partition ro until next power on\n", part_md->disk->disk_name);
+								set_disk_ro(part_md->disk, 1);
+							}
+					}
+				}
+			}
+		}
+#else /* CONFIG_MMC_RTK_EMMC && CONFIG_SYNO_LSP_RTD1619 */
 		pr_info("%s: Locking boot partition ro until next power on\n",
 			md->disk->disk_name);
 		set_disk_ro(md->disk, 1);
@@ -255,6 +373,7 @@ static ssize_t power_ro_lock_store(struct device *dev,
 				pr_info("%s: Locking boot partition ro until next power on\n", part_md->disk->disk_name);
 				set_disk_ro(part_md->disk, 1);
 			}
+#endif /* CONFIG_MMC_RTK_EMMC && CONFIG_SYNO_LSP_RTD1619 */
 	}
 
 	mmc_blk_put(md);
@@ -596,6 +715,14 @@ static int mmc_blk_ioctl_cmd(struct block_device *bdev,
 	struct mmc_card *card;
 	int err = 0, ioc_err = 0;
 
+	/*
+	 * The caller must have CAP_SYS_RAWIO, and must be calling this on the
+	 * whole block device, not on a partition.  This prevents overspray
+	 * between sibling partitions.
+	 */
+	if ((!capable(CAP_SYS_RAWIO)) || (bdev != bdev->bd_contains))
+		return -EPERM;
+
 	idata = mmc_blk_ioctl_copy_from_user(ic_ptr);
 	if (IS_ERR(idata))
 		return PTR_ERR(idata);
@@ -637,6 +764,14 @@ static int mmc_blk_ioctl_multi_cmd(struct block_device *bdev,
 	struct mmc_blk_data *md;
 	int i, err = 0, ioc_err = 0;
 	__u64 num_of_cmds;
+
+	/*
+	 * The caller must have CAP_SYS_RAWIO, and must be calling this on the
+	 * whole block device, not on a partition.  This prevents overspray
+	 * between sibling partitions.
+	 */
+	if ((!capable(CAP_SYS_RAWIO)) || (bdev != bdev->bd_contains))
+		return -EPERM;
 
 	if (copy_from_user(&num_of_cmds, &user->num_of_cmds,
 			   sizeof(num_of_cmds)))
@@ -693,14 +828,6 @@ cmd_err:
 static int mmc_blk_ioctl(struct block_device *bdev, fmode_t mode,
 	unsigned int cmd, unsigned long arg)
 {
-	/*
-	 * The caller must have CAP_SYS_RAWIO, and must be calling this on the
-	 * whole block device, not on a partition.  This prevents overspray
-	 * between sibling partitions.
-	 */
-	if ((!capable(CAP_SYS_RAWIO)) || (bdev != bdev->bd_contains))
-		return -EPERM;
-
 	switch (cmd) {
 	case MMC_IOC_CMD:
 		return mmc_blk_ioctl_cmd(bdev,
@@ -1747,7 +1874,7 @@ static void mmc_blk_packed_hdr_wrq_prep(struct mmc_queue_req *mqrq,
 	struct mmc_blk_data *md = mq->data;
 	struct mmc_packed *packed = mqrq->packed;
 	bool do_rel_wr, do_data_tag;
-	u32 *packed_cmd_hdr;
+	__le32 *packed_cmd_hdr;
 	u8 hdr_blocks;
 	u8 i = 1;
 
@@ -1759,8 +1886,8 @@ static void mmc_blk_packed_hdr_wrq_prep(struct mmc_queue_req *mqrq,
 
 	packed_cmd_hdr = packed->cmd_hdr;
 	memset(packed_cmd_hdr, 0, sizeof(packed->cmd_hdr));
-	packed_cmd_hdr[0] = (packed->nr_entries << 16) |
-		(PACKED_CMD_WR << 8) | PACKED_CMD_VER;
+	packed_cmd_hdr[0] = cpu_to_le32((packed->nr_entries << 16) |
+		(PACKED_CMD_WR << 8) | PACKED_CMD_VER);
 	hdr_blocks = mmc_large_sector(card) ? 8 : 1;
 
 	/*
@@ -1774,14 +1901,14 @@ static void mmc_blk_packed_hdr_wrq_prep(struct mmc_queue_req *mqrq,
 			((brq->data.blocks * brq->data.blksz) >=
 			 card->ext_csd.data_tag_unit_size);
 		/* Argument of CMD23 */
-		packed_cmd_hdr[(i * 2)] =
+		packed_cmd_hdr[(i * 2)] = cpu_to_le32(
 			(do_rel_wr ? MMC_CMD23_ARG_REL_WR : 0) |
 			(do_data_tag ? MMC_CMD23_ARG_TAG_REQ : 0) |
-			blk_rq_sectors(prq);
+			blk_rq_sectors(prq));
 		/* Argument of CMD18 or CMD25 */
-		packed_cmd_hdr[((i * 2)) + 1] =
+		packed_cmd_hdr[((i * 2)) + 1] = cpu_to_le32(
 			mmc_card_blockaddr(card) ?
-			blk_rq_pos(prq) : blk_rq_pos(prq) << 9;
+			blk_rq_pos(prq) : blk_rq_pos(prq) << 9);
 		packed->blocks += blk_rq_sectors(prq);
 		i++;
 	}
@@ -2178,6 +2305,21 @@ static inline int mmc_blk_readonly(struct mmc_card *card)
 	       !(card->csd.cmdclass & CCC_BLOCK_WRITE);
 }
 
+#ifdef MY_DEF_HERE
+void mmc_blk_set_ro(struct mmc_card *card)
+{
+        struct mmc_blk_data *md=NULL, *part_md=NULL;
+        md = card->dev.driver_data;
+        if(md!=NULL) {
+                md->read_only = mmc_blk_readonly(card);
+                set_disk_ro(md->disk, md->read_only);
+                list_for_each_entry(part_md, &md->part, part)
+                        set_disk_ro(part_md->disk, md->read_only);
+        }
+}
+EXPORT_SYMBOL(mmc_blk_set_ro);
+#endif /* MY_DEF_HERE */
+
 static struct mmc_blk_data *mmc_blk_alloc_req(struct mmc_card *card,
 					      struct device *parent,
 					      sector_t size,
@@ -2244,6 +2386,7 @@ static struct mmc_blk_data *mmc_blk_alloc_req(struct mmc_card *card,
 	md->disk->queue = md->queue.queue;
 	md->disk->driverfs_dev = parent;
 	set_disk_ro(md->disk, md->read_only || default_ro);
+	md->disk->flags = GENHD_FL_EXT_DEVT;
 	if (area_type & (MMC_BLK_DATA_AREA_RPMB | MMC_BLK_DATA_AREA_BOOT))
 		md->disk->flags |= GENHD_FL_NO_PART_SCAN;
 
@@ -2271,7 +2414,8 @@ static struct mmc_blk_data *mmc_blk_alloc_req(struct mmc_card *card,
 	set_capacity(md->disk, size);
 
 	if (mmc_host_cmd23(card->host)) {
-		if (mmc_card_mmc(card) ||
+		if ((mmc_card_mmc(card) &&
+		     card->csd.mmca_vsn >= CSD_SPEC_VER_3) ||
 		    (mmc_card_sd(card) &&
 		     card->scr.cmds & SD_SCR_CMD23_SUPPORT))
 			md->flags |= MMC_BLK_CMD23;
@@ -2506,10 +2650,11 @@ static const struct mmc_fixup blk_fixups[] =
 		  MMC_QUIRK_BLK_NO_CMD23),
 
 	/*
-	 * Some Micron MMC cards needs longer data read timeout than
-	 * indicated in CSD.
+	 * Some MMC cards need longer data read timeout than indicated in CSD.
 	 */
 	MMC_FIXUP(CID_NAME_ANY, CID_MANFID_MICRON, 0x200, add_quirk_mmc,
+		  MMC_QUIRK_LONG_READ_TIME),
+	MMC_FIXUP("008GE0", CID_MANFID_TOSHIBA, CID_OEMID_ANY, add_quirk_mmc,
 		  MMC_QUIRK_LONG_READ_TIME),
 
 	/*

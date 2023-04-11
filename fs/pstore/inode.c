@@ -178,7 +178,6 @@ static loff_t pstore_file_llseek(struct file *file, loff_t off, int whence)
 }
 
 static const struct file_operations pstore_file_operations = {
-	.owner		= THIS_MODULE,
 	.open		= pstore_file_open,
 	.read		= pstore_file_read,
 	.llseek		= pstore_file_llseek,
@@ -377,7 +376,7 @@ int pstore_mkfile(enum pstore_type_id type, char *psname, u64 id, int count,
 		break;
 	}
 
-	mutex_lock(&d_inode(root)->i_mutex);
+	inode_lock(d_inode(root));
 
 	dentry = d_alloc_name(root, name);
 	if (!dentry)
@@ -397,12 +396,12 @@ int pstore_mkfile(enum pstore_type_id type, char *psname, u64 id, int count,
 	list_add(&private->list, &allpstore);
 	spin_unlock_irqrestore(&allpstore_lock, flags);
 
-	mutex_unlock(&d_inode(root)->i_mutex);
+	inode_unlock(d_inode(root));
 
 	return 0;
 
 fail_lockedalloc:
-	mutex_unlock(&d_inode(root)->i_mutex);
+	inode_unlock(d_inode(root));
 	kfree(private);
 fail_alloc:
 	iput(inode);

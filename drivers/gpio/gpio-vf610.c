@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  * vf610 GPIO support through PORT and GPIO module
  *
@@ -227,6 +230,7 @@ static int vf610_gpio_probe(struct platform_device *pdev)
 	struct vf610_gpio_port *port;
 	struct resource *iores;
 	struct gpio_chip *gc;
+	int i;
 	int ret;
 
 	port = devm_kzalloc(&pdev->dev, sizeof(*port), GFP_KERNEL);
@@ -249,7 +253,11 @@ static int vf610_gpio_probe(struct platform_device *pdev)
 
 	gc = &port->gc;
 	gc->of_node = np;
+#if defined(MY_DEF_HERE)
+	gc->parent = dev;
+#else /* MY_DEF_HERE */
 	gc->dev = dev;
+#endif /* MY_DEF_HERE */
 	gc->label = "vf610-gpio";
 	gc->ngpio = VF610_GPIO_PER_PORT;
 	gc->base = of_alias_get_id(np, "gpio") * VF610_GPIO_PER_PORT;
@@ -264,6 +272,10 @@ static int vf610_gpio_probe(struct platform_device *pdev)
 	ret = gpiochip_add(gc);
 	if (ret < 0)
 		return ret;
+
+	/* Mask all GPIO interrupts */
+	for (i = 0; i < gc->ngpio; i++)
+		vf610_gpio_writel(0, port->base + PORT_PCR(i));
 
 	/* Clear the interrupt status register for all GPIO's */
 	vf610_gpio_writel(~0, port->base + PORT_ISFR);

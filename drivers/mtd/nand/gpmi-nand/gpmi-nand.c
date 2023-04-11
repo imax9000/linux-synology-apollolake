@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  * Freescale GPMI NAND Flash Driver
  *
@@ -140,7 +143,11 @@ static bool set_geometry_by_ecc_info(struct gpmi_nand_data *this)
 {
 	struct bch_geometry *geo = &this->bch_geometry;
 	struct mtd_info *mtd = &this->mtd;
+#if defined(MY_DEF_HERE)
+	struct nand_chip *chip = mtd_to_nand(mtd);
+#else /* MY_DEF_HERE */
 	struct nand_chip *chip = mtd->priv;
+#endif /* MY_DEF_HERE */
 	struct nand_oobfree *of = gpmi_hw_ecclayout.oobfree;
 	unsigned int block_mark_bit_offset;
 
@@ -856,7 +863,11 @@ error_alloc:
 
 static void gpmi_cmd_ctrl(struct mtd_info *mtd, int data, unsigned int ctrl)
 {
+#if defined(MY_DEF_HERE)
+	struct nand_chip *chip = mtd_to_nand(mtd);
+#else /* MY_DEF_HERE */
 	struct nand_chip *chip = mtd->priv;
+#endif /* MY_DEF_HERE */
 	struct gpmi_nand_data *this = chip->priv;
 	int ret;
 
@@ -890,7 +901,11 @@ static void gpmi_cmd_ctrl(struct mtd_info *mtd, int data, unsigned int ctrl)
 
 static int gpmi_dev_ready(struct mtd_info *mtd)
 {
+#if defined(MY_DEF_HERE)
+	struct nand_chip *chip = mtd_to_nand(mtd);
+#else /* MY_DEF_HERE */
 	struct nand_chip *chip = mtd->priv;
+#endif /* MY_DEF_HERE */
 	struct gpmi_nand_data *this = chip->priv;
 
 	return gpmi_is_ready(this, this->current_chip);
@@ -898,7 +913,11 @@ static int gpmi_dev_ready(struct mtd_info *mtd)
 
 static void gpmi_select_chip(struct mtd_info *mtd, int chipnr)
 {
+#if defined(MY_DEF_HERE)
+	struct nand_chip *chip = mtd_to_nand(mtd);
+#else /* MY_DEF_HERE */
 	struct nand_chip *chip = mtd->priv;
+#endif /* MY_DEF_HERE */
 	struct gpmi_nand_data *this = chip->priv;
 
 	if ((this->current_chip < 0) && (chipnr >= 0))
@@ -911,7 +930,11 @@ static void gpmi_select_chip(struct mtd_info *mtd, int chipnr)
 
 static void gpmi_read_buf(struct mtd_info *mtd, uint8_t *buf, int len)
 {
+#if defined(MY_DEF_HERE)
+	struct nand_chip *chip = mtd_to_nand(mtd);
+#else /* MY_DEF_HERE */
 	struct nand_chip *chip = mtd->priv;
+#endif /* MY_DEF_HERE */
 	struct gpmi_nand_data *this = chip->priv;
 
 	dev_dbg(this->dev, "len is %d\n", len);
@@ -923,7 +946,11 @@ static void gpmi_read_buf(struct mtd_info *mtd, uint8_t *buf, int len)
 
 static void gpmi_write_buf(struct mtd_info *mtd, const uint8_t *buf, int len)
 {
+#if defined(MY_DEF_HERE)
+	struct nand_chip *chip = mtd_to_nand(mtd);
+#else /* MY_DEF_HERE */
 	struct nand_chip *chip = mtd->priv;
+#endif /* MY_DEF_HERE */
 	struct gpmi_nand_data *this = chip->priv;
 
 	dev_dbg(this->dev, "len is %d\n", len);
@@ -935,7 +962,11 @@ static void gpmi_write_buf(struct mtd_info *mtd, const uint8_t *buf, int len)
 
 static uint8_t gpmi_read_byte(struct mtd_info *mtd)
 {
+#if defined(MY_DEF_HERE)
+	struct nand_chip *chip = mtd_to_nand(mtd);
+#else /* MY_DEF_HERE */
 	struct nand_chip *chip = mtd->priv;
+#endif /* MY_DEF_HERE */
 	struct gpmi_nand_data *this = chip->priv;
 	uint8_t *buf = this->data_buffer_dma;
 
@@ -1029,23 +1060,96 @@ static int gpmi_ecc_read_page(struct mtd_info *mtd, struct nand_chip *chip,
 		return ret;
 	}
 
-	/* handle the block mark swapping */
-	block_mark_swapping(this, payload_virt, auxiliary_virt);
-
 	/* Loop over status bytes, accumulating ECC status. */
 	status = auxiliary_virt + nfc_geo->auxiliary_status_offset;
+
+	read_page_swap_end(this, buf, nfc_geo->payload_size,
+			   this->payload_virt, this->payload_phys,
+			   nfc_geo->payload_size,
+			   payload_virt, payload_phys);
 
 	for (i = 0; i < nfc_geo->ecc_chunk_count; i++, status++) {
 		if ((*status == STATUS_GOOD) || (*status == STATUS_ERASED))
 			continue;
 
 		if (*status == STATUS_UNCORRECTABLE) {
+			int eccbits = nfc_geo->ecc_strength * nfc_geo->gf_len;
+			u8 *eccbuf = this->raw_buffer;
+			int offset, bitoffset;
+			int eccbytes;
+			int flips;
+
+			/* Read ECC bytes into our internal raw_buffer */
+			offset = nfc_geo->metadata_size * 8;
+			offset += ((8 * nfc_geo->ecc_chunk_size) + eccbits) * (i + 1);
+			offset -= eccbits;
+			bitoffset = offset % 8;
+			eccbytes = DIV_ROUND_UP(offset + eccbits, 8);
+			offset /= 8;
+			eccbytes -= offset;
+			chip->cmdfunc(mtd, NAND_CMD_RNDOUT, offset, -1);
+			chip->read_buf(mtd, eccbuf, eccbytes);
+
+			/*
+			 * ECC data are not byte aligned and we may have
+			 * in-band data in the first and last byte of
+			 * eccbuf. Set non-eccbits to one so that
+			 * nand_check_erased_ecc_chunk() does not count them
+			 * as bitflips.
+			 */
+			if (bitoffset)
+				eccbuf[0] |= GENMASK(bitoffset - 1, 0);
+
+			bitoffset = (bitoffset + eccbits) % 8;
+			if (bitoffset)
+				eccbuf[eccbytes - 1] |= GENMASK(7, bitoffset);
+
+			/*
+			 * The ECC hardware has an uncorrectable ECC status
+			 * code in case we have bitflips in an erased page. As
+			 * nothing was written into this subpage the ECC is
+			 * obviously wrong and we can not trust it. We assume
+			 * at this point that we are reading an erased page and
+			 * try to correct the bitflips in buffer up to
+			 * ecc_strength bitflips. If this is a page with random
+			 * data, we exceed this number of bitflips and have a
+			 * ECC failure. Otherwise we use the corrected buffer.
+			 */
+			if (i == 0) {
+				/* The first block includes metadata */
+				flips = nand_check_erased_ecc_chunk(
+						buf + i * nfc_geo->ecc_chunk_size,
+						nfc_geo->ecc_chunk_size,
+						eccbuf, eccbytes,
+						auxiliary_virt,
+						nfc_geo->metadata_size,
+						nfc_geo->ecc_strength);
+			} else {
+				flips = nand_check_erased_ecc_chunk(
+						buf + i * nfc_geo->ecc_chunk_size,
+						nfc_geo->ecc_chunk_size,
+						eccbuf, eccbytes,
+						NULL, 0,
+						nfc_geo->ecc_strength);
+			}
+
+			if (flips > 0) {
+				max_bitflips = max_t(unsigned int, max_bitflips,
+						     flips);
+				mtd->ecc_stats.corrected += flips;
+				continue;
+			}
+
 			mtd->ecc_stats.failed++;
 			continue;
 		}
+
 		mtd->ecc_stats.corrected += *status;
 		max_bitflips = max_t(unsigned int, max_bitflips, *status);
 	}
+
+	/* handle the block mark swapping */
+	block_mark_swapping(this, buf, auxiliary_virt);
 
 	if (oob_required) {
 		/*
@@ -1061,11 +1165,6 @@ static int gpmi_ecc_read_page(struct mtd_info *mtd, struct nand_chip *chip,
 		memset(chip->oob_poi, ~0, mtd->oobsize);
 		chip->oob_poi[0] = ((uint8_t *) auxiliary_virt)[0];
 	}
-
-	read_page_swap_end(this, buf, nfc_geo->payload_size,
-			this->payload_virt, this->payload_phys,
-			nfc_geo->payload_size,
-			payload_virt, payload_phys);
 
 	return max_bitflips;
 }
@@ -1538,7 +1637,11 @@ static int gpmi_ecc_write_oob_raw(struct mtd_info *mtd, struct nand_chip *chip,
 
 static int gpmi_block_markbad(struct mtd_info *mtd, loff_t ofs)
 {
+#if defined(MY_DEF_HERE)
+	struct nand_chip *chip = mtd_to_nand(mtd);
+#else /* MY_DEF_HERE */
 	struct nand_chip *chip = mtd->priv;
+#endif /* MY_DEF_HERE */
 	struct gpmi_nand_data *this = chip->priv;
 	int ret = 0;
 	uint8_t *block_mark;
@@ -1838,7 +1941,11 @@ static void gpmi_nand_exit(struct gpmi_nand_data *this)
 static int gpmi_init_last(struct gpmi_nand_data *this)
 {
 	struct mtd_info *mtd = &this->mtd;
+#if defined(MY_DEF_HERE)
+	struct nand_chip *chip = mtd_to_nand(mtd);
+#else /* MY_DEF_HERE */
 	struct nand_chip *chip = mtd->priv;
+#endif /* MY_DEF_HERE */
 	struct nand_ecc_ctrl *ecc = &chip->ecc;
 	struct bch_geometry *bch_geo = &this->bch_geometry;
 	int ret;
@@ -1888,7 +1995,11 @@ static int gpmi_nand_init(struct gpmi_nand_data *this)
 {
 	struct mtd_info  *mtd = &this->mtd;
 	struct nand_chip *chip = &this->nand;
+#if defined(MY_DEF_HERE)
+//do nothing
+#else /* MY_DEF_HERE */
 	struct mtd_part_parser_data ppdata = {};
+#endif /* MY_DEF_HERE */
 	int ret;
 
 	/* init current chip */
@@ -1901,6 +2012,9 @@ static int gpmi_nand_init(struct gpmi_nand_data *this)
 
 	/* init the nand_chip{}, we don't support a 16-bit NAND Flash bus. */
 	chip->priv		= this;
+#if defined(MY_DEF_HERE)
+	nand_set_flash_node(chip, this->pdev->dev.of_node);
+#endif /* MY_DEF_HERE */
 	chip->select_chip	= gpmi_select_chip;
 	chip->cmd_ctrl		= gpmi_cmd_ctrl;
 	chip->dev_ready		= gpmi_dev_ready;
@@ -1954,8 +2068,12 @@ static int gpmi_nand_init(struct gpmi_nand_data *this)
 	if (ret)
 		goto err_out;
 
+#if defined(MY_DEF_HERE)
+	ret = mtd_device_register(mtd, NULL, 0);
+#else /* MY_DEF_HERE */
 	ppdata.of_node = this->pdev->dev.of_node;
 	ret = mtd_device_parse_register(mtd, NULL, &ppdata, NULL, 0);
+#endif /* MY_DEF_HERE */
 	if (ret)
 		goto err_out;
 	return 0;

@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  * Marvell MBUS common definitions.
  *
@@ -29,8 +32,8 @@ struct mbus_dram_target_info
 	struct mbus_dram_window {
 		u8	cs_index;
 		u8	mbus_attr;
-		u32	base;
-		u32	size;
+		u64	base;
+		u64	size;
 	} cs[4];
 };
 
@@ -69,6 +72,11 @@ static inline const struct mbus_dram_target_info *mv_mbus_dram_info_nooverlap(vo
 int mvebu_mbus_save_cpu_target(u32 *store_addr);
 void mvebu_mbus_get_pcie_mem_aperture(struct resource *res);
 void mvebu_mbus_get_pcie_io_aperture(struct resource *res);
+#if defined(MY_DEF_HERE)
+int mvebu_mbus_get_dram_win_info(phys_addr_t phyaddr, u8 *target, u8 *attr);
+int mvebu_mbus_get_io_win_info(phys_addr_t phyaddr, u32 *size, u8 *target,
+			       u8 *attr);
+#endif /* MY_DEF_HERE */
 int mvebu_mbus_add_window_remap_by_id(unsigned int target,
 				      unsigned int attribute,
 				      phys_addr_t base, size_t size,

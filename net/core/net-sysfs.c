@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  * net-sysfs.c - network device class and attributes
  *
@@ -199,9 +202,15 @@ static ssize_t speed_show(struct device *dev,
 		return restart_syscall();
 
 	if (netif_running(netdev)) {
+#if defined(MY_ABC_HERE)
+		struct ethtool_link_ksettings cmd;
+		if (!__ethtool_get_link_ksettings(netdev, &cmd))
+			ret = sprintf(buf, fmt_dec, cmd.base.speed);
+#else /* MY_ABC_HERE */
 		struct ethtool_cmd cmd;
 		if (!__ethtool_get_settings(netdev, &cmd))
 			ret = sprintf(buf, fmt_dec, ethtool_cmd_speed(&cmd));
+#endif /* MY_ABC_HERE */
 	}
 	rtnl_unlock();
 	return ret;
@@ -218,6 +227,26 @@ static ssize_t duplex_show(struct device *dev,
 		return restart_syscall();
 
 	if (netif_running(netdev)) {
+#if defined(MY_ABC_HERE)
+		struct ethtool_link_ksettings cmd;
+
+		if (!__ethtool_get_link_ksettings(netdev, &cmd)) {
+			const char *duplex;
+
+			switch (cmd.base.duplex) {
+			case DUPLEX_HALF:
+				duplex = "half";
+				break;
+			case DUPLEX_FULL:
+				duplex = "full";
+				break;
+			default:
+				duplex = "unknown";
+				break;
+			}
+			ret = sprintf(buf, "%s\n", duplex);
+		}
+#else /* MY_ABC_HERE */
 		struct ethtool_cmd cmd;
 		if (!__ethtool_get_settings(netdev, &cmd)) {
 			const char *duplex;
@@ -234,6 +263,7 @@ static ssize_t duplex_show(struct device *dev,
 			}
 			ret = sprintf(buf, "%s\n", duplex);
 		}
+#endif /* MY_ABC_HERE */
 	}
 	rtnl_unlock();
 	return ret;
@@ -1361,6 +1391,9 @@ static int register_queue_kobjects(struct net_device *dev)
 error:
 	netdev_queue_update_kobjects(dev, txq, 0);
 	net_rx_queue_update_kobjects(dev, rxq, 0);
+#ifdef CONFIG_SYSFS
+	kset_unregister(dev->queues_kset);
+#endif
 	return error;
 }
 

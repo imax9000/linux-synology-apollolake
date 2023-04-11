@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  * drivers/usb/core/usb.c
  *
@@ -36,6 +39,9 @@
 #include <linux/mutex.h>
 #include <linux/workqueue.h>
 #include <linux/debugfs.h>
+#ifdef MY_ABC_HERE
+#include <linux/proc_fs.h>
+#endif /* MY_ABC_HERE */
 
 #include <asm/io.h>
 #include <linux/scatterlist.h>
@@ -95,6 +101,8 @@ struct usb_host_interface *usb_find_alt_setting(
 	struct usb_interface_cache *intf_cache = NULL;
 	int i;
 
+	if (!config)
+		return NULL;
 	for (i = 0; i < config->desc.bNumInterfaces; i++) {
 		if (config->intf_cache[i]->altsetting[0].desc.bInterfaceNumber
 				== iface_num) {
@@ -286,6 +294,10 @@ static void usb_release_dev(struct device *dev)
 	usb_put_hcd(hcd);
 	kfree(udev->product);
 	kfree(udev->manufacturer);
+#if defined(MY_ABC_HERE)
+	if (udev->syno_old_serial != udev->serial)
+		kfree(udev->syno_old_serial);
+#endif /* MY_ABC_HERE */
 	kfree(udev->serial);
 	kfree(udev);
 }
@@ -676,14 +688,14 @@ EXPORT_SYMBOL_GPL(usb_get_current_frame_number);
  */
 
 int __usb_get_extra_descriptor(char *buffer, unsigned size,
-			       unsigned char type, void **ptr)
+			       unsigned char type, void **ptr, size_t minsize)
 {
 	struct usb_descriptor_header *header;
 
 	while (size >= sizeof(struct usb_descriptor_header)) {
 		header = (struct usb_descriptor_header *)buffer;
 
-		if (header->bLength < 2) {
+		if (header->bLength < 2 || header->bLength > size) {
 			printk(KERN_ERR
 				"%s: bogus descriptor, type %d length %d\n",
 				usbcore_name,
@@ -692,7 +704,7 @@ int __usb_get_extra_descriptor(char *buffer, unsigned size,
 			return -1;
 		}
 
-		if (header->bDescriptorType == type) {
+		if (header->bDescriptorType == type && header->bLength >= minsize) {
 			*ptr = header;
 			return 0;
 		}
@@ -1014,6 +1026,9 @@ struct dentry *usb_debug_root;
 EXPORT_SYMBOL_GPL(usb_debug_root);
 
 static struct dentry *usb_debug_devices;
+#ifdef MY_ABC_HERE
+static struct proc_dir_entry *usbdir = NULL;
+#endif /* MY_ABC_HERE */
 
 static int usb_debugfs_init(void)
 {
@@ -1030,6 +1045,14 @@ static int usb_debugfs_init(void)
 		return -ENOENT;
 	}
 
+#ifdef MY_ABC_HERE
+	/* create mount point for /proc/bus/usb */
+	usbdir = proc_mkdir("bus/usb", NULL);
+	if (!usbdir) {
+		printk(KERN_ERR "Fail to create /proc/bus/usb\n");
+	}
+#endif /* MY_ABC_HERE */
+
 	return 0;
 }
 
@@ -1037,6 +1060,10 @@ static void usb_debugfs_cleanup(void)
 {
 	debugfs_remove(usb_debug_devices);
 	debugfs_remove(usb_debug_root);
+#ifdef MY_ABC_HERE
+	if (usbdir)
+		remove_proc_entry("bus/usb", NULL);
+#endif /* MY_ABC_HERE */
 }
 
 /*
@@ -1074,10 +1101,19 @@ static int __init usb_init(void)
 	retval = usb_hub_init();
 	if (retval)
 		goto hub_init_failed;
+#if defined(CONFIG_USB_ETRON_HUB)
+	retval = ethub_init();
+	if (retval)
+		goto ethub_init_failed;
+#endif /* CONFIG_USB_ETRON_HUB */
 	retval = usb_register_device_driver(&usb_generic_driver, THIS_MODULE);
 	if (!retval)
 		goto out;
 
+#if defined(CONFIG_USB_ETRON_HUB)
+	ethub_cleanup();
+ethub_init_failed:
+#endif /* CONFIG_USB_ETRON_HUB */
 	usb_hub_cleanup();
 hub_init_failed:
 	usb_devio_cleanup();
@@ -1109,6 +1145,9 @@ static void __exit usb_exit(void)
 	usb_major_cleanup();
 	usb_deregister(&usbfs_driver);
 	usb_devio_cleanup();
+#if defined(CONFIG_USB_ETRON_HUB)
+	ethub_cleanup();
+#endif /* CONFIG_USB_ETRON_HUB */
 	usb_hub_cleanup();
 	bus_unregister_notifier(&usb_bus_type, &usb_bus_nb);
 	bus_unregister(&usb_bus_type);

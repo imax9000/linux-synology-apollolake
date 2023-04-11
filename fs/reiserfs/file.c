@@ -158,7 +158,7 @@ static int reiserfs_sync_file(struct file *filp, loff_t start, loff_t end,
 	if (err)
 		return err;
 
-	mutex_lock(&inode->i_mutex);
+	inode_lock(inode);
 	BUG_ON(!S_ISREG(inode->i_mode));
 	err = sync_mapping_buffers(inode->i_mapping);
 	reiserfs_write_lock(inode->i_sb);
@@ -166,7 +166,7 @@ static int reiserfs_sync_file(struct file *filp, loff_t start, loff_t end,
 	reiserfs_write_unlock(inode->i_sb);
 	if (barrier_done != 1 && reiserfs_barrier_flush(inode->i_sb))
 		blkdev_issue_flush(inode->i_sb->s_bdev, GFP_KERNEL, NULL);
-	mutex_unlock(&inode->i_mutex);
+	inode_unlock(inode);
 	if (barrier_done < 0)
 		return barrier_done;
 	return (err < 0) ? -EIO : 0;
@@ -189,7 +189,7 @@ int reiserfs_commit_page(struct inode *inode, struct page *page,
 	int ret = 0;
 
 	th.t_trans_id = 0;
-	blocksize = 1 << inode->i_blkbits;
+	blocksize = i_blocksize(inode);
 
 	if (logit) {
 		reiserfs_write_lock(s);
@@ -260,10 +260,10 @@ const struct file_operations reiserfs_file_operations = {
 
 const struct inode_operations reiserfs_file_inode_operations = {
 	.setattr = reiserfs_setattr,
-	.setxattr = reiserfs_setxattr,
-	.getxattr = reiserfs_getxattr,
+	.setxattr = generic_setxattr,
+	.getxattr = generic_getxattr,
 	.listxattr = reiserfs_listxattr,
-	.removexattr = reiserfs_removexattr,
+	.removexattr = generic_removexattr,
 	.permission = reiserfs_permission,
 	.get_acl = reiserfs_get_acl,
 	.set_acl = reiserfs_set_acl,

@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 #ifndef __EXTENTMAP__
 #define __EXTENTMAP__
 
@@ -32,16 +35,38 @@ struct extent_map {
 	u64 block_len;
 	u64 generation;
 	unsigned long flags;
-	struct block_device *bdev;
+	union {
+		struct block_device *bdev;
+
+		/*
+		 * used for chunk mappings
+		 * flags & EXTENT_FLAG_FS_MAPPING must be set
+		 */
+		struct map_lookup *map_lookup;
+	};
 	atomic_t refs;
 	unsigned int compress_type;
 	struct list_head list;
+#ifdef MY_ABC_HERE
+	struct list_head free_list;
+	bool bl_increase;
+#endif /* MY_ABC_HERE */
 };
 
+#ifdef MY_ABC_HERE
+struct btrfs_inode;
+#endif /* MY_ABC_HERE */
 struct extent_map_tree {
 	struct rb_root map;
 	struct list_head modified_extents;
 	rwlock_t lock;
+#ifdef MY_ABC_HERE
+	struct list_head not_modified_extents;
+	struct list_head syno_modified_extents;
+	struct list_head pinned_extents;
+	atomic_t nr_extent_maps;
+	struct btrfs_inode *inode;
+#endif /* MY_ABC_HERE */
 };
 
 static inline int extent_map_in_tree(const struct extent_map *em)
@@ -82,4 +107,6 @@ int unpin_extent_cache(struct extent_map_tree *tree, u64 start, u64 len, u64 gen
 void clear_em_logging(struct extent_map_tree *tree, struct extent_map *em);
 struct extent_map *search_extent_mapping(struct extent_map_tree *tree,
 					 u64 start, u64 len);
+int btrfs_add_extent_mapping(struct extent_map_tree *em_tree,
+			     struct extent_map **em_in, u64 start, u64 len);
 #endif

@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  *  linux/include/linux/console.h
  *
@@ -129,6 +132,11 @@ struct console {
 	short	index;
 	int	cflag;
 	void	*data;
+#if defined(MY_ABC_HERE) || defined(MY_DEF_HERE)
+	void __iomem * pcimapaddress;
+	unsigned long pcimapsize;
+	void	(*deinit)(void);
+#endif /* MY_ABC_HERE */
 	struct	 console *next;
 };
 
@@ -150,6 +158,7 @@ extern int console_trylock(void);
 extern void console_unlock(void);
 extern void console_conditional_schedule(void);
 extern void console_unblank(void);
+extern void console_flush_on_panic(void);
 extern struct tty_driver *console_device(int *);
 extern void console_stop(struct console *);
 extern void console_start(struct console *);
@@ -190,6 +199,8 @@ void vcs_remove_sysfs(int index);
 
 #ifdef CONFIG_VGA_CONSOLE
 extern bool vgacon_text_force(void);
+#else
+static inline bool vgacon_text_force(void) { return false; }
 #endif
 
 #endif /* _LINUX_CONSOLE_H */

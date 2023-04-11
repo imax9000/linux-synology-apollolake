@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  * Copyright (C) 2015 Cavium, Inc.
  *
@@ -265,7 +268,11 @@ struct snd_queue {
 	u64		*skbuff;
 	void		*desc;
 
+#if defined(MY_DEF_HERE)
+//do nothing
+#else /* MY_DEF_HERE */
 #define	TSO_HEADER_SIZE	128
+#endif /* MY_DEF_HERE */
 	/* For TSO segment's header */
 	char		*tso_hdrs;
 	dma_addr_t	tso_hdrs_phys;
@@ -344,8 +351,7 @@ u64  nicvf_queue_reg_read(struct nicvf *nic,
 /* Stats */
 void nicvf_update_rq_stats(struct nicvf *nic, int rq_idx);
 void nicvf_update_sq_stats(struct nicvf *nic, int sq_idx);
-int nicvf_check_cqe_rx_errs(struct nicvf *nic,
-			    struct cmp_queue *cq, struct cqe_rx_t *cqe_rx);
+int nicvf_check_cqe_rx_errs(struct nicvf *nic, struct cqe_rx_t *cqe_rx);
 int nicvf_check_cqe_tx_errs(struct nicvf *nic,
 			    struct cmp_queue *cq, struct cqe_send_t *cqe_tx);
 #endif /* NICVF_QUEUES_H */

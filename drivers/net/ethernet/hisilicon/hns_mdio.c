@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  * Copyright (c) 2014-2015 Hisilicon Limited.
  *
@@ -319,7 +322,7 @@ static int hns_mdio_read(struct mii_bus *bus, int phy_id, int regnum)
 		}
 
 		hns_mdio_cmd_write(mdio_dev, is_c45,
-				   MDIO_C45_WRITE_ADDR, phy_id, devad);
+				   MDIO_C45_READ, phy_id, devad);
 	}
 
 	/* Step 5: waitting for MDIO_COMMAND_REG 's mdio_start==0,*/
@@ -463,10 +466,14 @@ static int hns_mdio_probe(struct platform_device *pdev)
 		dev_warn(&pdev->dev, "no syscon hisilicon,peri-c-subctrl\n");
 		mdio_dev->subctrl_vbase = NULL;
 	}
+#if defined(MY_DEF_HERE)
+//do nothing
+#else /* MY_DEF_HERE */
 	new_bus->irq = devm_kcalloc(&pdev->dev, PHY_MAX_ADDR,
 				    sizeof(int), GFP_KERNEL);
 	if (!new_bus->irq)
 		return -ENOMEM;
+#endif /* MY_DEF_HERE */
 
 	new_bus->parent = &pdev->dev;
 	platform_set_drvdata(pdev, new_bus);

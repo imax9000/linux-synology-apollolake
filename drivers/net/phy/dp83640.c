@@ -1,3 +1,6 @@
+#ifndef MY_ABC_HERE
+#define MY_ABC_HERE
+#endif
 /*
  * Driver for the National Semiconductor DP83640 PHYTER
  *
@@ -220,10 +223,18 @@ static void rx_timestamp_work(struct work_struct *work);
 
 #define BROADCAST_ADDR 31
 
+#if defined(MY_DEF_HERE)
+static inline int broadcast_write(struct phy_device *phydev, u32 regnum,
+				  u16 val)
+{
+	return mdiobus_write(phydev->mdio.bus, BROADCAST_ADDR, regnum, val);
+}
+#else /* MY_DEF_HERE */
 static inline int broadcast_write(struct mii_bus *bus, u32 regnum, u16 val)
 {
 	return mdiobus_write(bus, BROADCAST_ADDR, regnum, val);
 }
+#endif /* MY_DEF_HERE */
 
 /* Caller must hold extreg_lock. */
 static int ext_read(struct phy_device *phydev, int page, u32 regnum)
@@ -232,7 +243,11 @@ static int ext_read(struct phy_device *phydev, int page, u32 regnum)
 	int val;
 
 	if (dp83640->clock->page != page) {
+#if defined(MY_DEF_HERE)
+		broadcast_write(phydev, PAGESEL, page);
+#else /* MY_DEF_HERE */
 		broadcast_write(phydev->bus, PAGESEL, page);
+#endif /* MY_DEF_HERE */
 		dp83640->clock->page = page;
 	}
 	val = phy_read(phydev, regnum);
@@ -247,11 +262,19 @@ static void ext_write(int broadcast, struct phy_device *phydev,
 	struct dp83640_private *dp83640 = phydev->priv;
 
 	if (dp83640->clock->page != page) {
+#if defined(MY_DEF_HERE)
+		broadcast_write(phydev, PAGESEL, page);
+#else /* MY_DEF_HERE */
 		broadcast_write(phydev->bus, PAGESEL, page);
+#endif /* MY_DEF_HERE */
 		dp83640->clock->page = page;
 	}
 	if (broadcast)
+#if defined(MY_DEF_HERE)
+		broadcast_write(phydev, regnum, val);
+#else /* MY_DEF_HERE */
 		broadcast_write(phydev->bus, regnum, val);
+#endif /* MY_DEF_HERE */
 	else
 		phy_write(phydev, regnum, val);
 }
@@ -845,6 +868,11 @@ static void decode_rxts(struct dp83640_private *dp83640,
 	struct skb_shared_hwtstamps *shhwtstamps = NULL;
 	struct sk_buff *skb;
 	unsigned long flags;
+	u8 overflow;
+
+	overflow = (phy_rxts->ns_hi >> 14) & 0x3;
+	if (overflow)
+		pr_debug("rx timestamp queue overflow, count %d\n", overflow);
 
 	spin_lock_irqsave(&dp83640->rx_lock, flags);
 
@@ -885,17 +913,34 @@ static void decode_txts(struct dp83640_private *dp83640,
 			struct phy_txts *phy_txts)
 {
 	struct skb_shared_hwtstamps shhwtstamps;
+	struct dp83640_skb_info *skb_info;
 	struct sk_buff *skb;
+	u8 overflow;
 	u64 ns;
 
 	/* We must already have the skb that triggered this. */
-
+again:
 	skb = skb_dequeue(&dp83640->tx_queue);
-
 	if (!skb) {
 		pr_debug("have timestamp but tx_queue empty\n");
 		return;
 	}
+
+	overflow = (phy_txts->ns_hi >> 14) & 0x3;
+	if (overflow) {
+		pr_debug("tx timestamp queue overflow, count %d\n", overflow);
+		while (skb) {
+			kfree_skb(skb);
+			skb = skb_dequeue(&dp83640->tx_queue);
+		}
+		return;
+	}
+	skb_info = (struct dp83640_skb_info *)skb->cb;
+	if (time_after(jiffies, skb_info->tmo)) {
+		kfree_skb(skb);
+		goto again;
+	}
+
 	ns = phy2txts(phy_txts);
 	memset(&shhwtstamps, 0, sizeof(shhwtstamps));
 	shhwtstamps.hwtstamp = ns_to_ktime(ns);
@@ -1039,7 +1084,11 @@ static int choose_this_phy(struct dp83640_clock *clock,
 	if (chosen_phy == -1 && !clock->chosen)
 		return 1;
 
+#if defined(MY_DEF_HERE)
+	if (chosen_phy == phydev->mdio.addr)
+#else /* MY_DEF_HERE */
 	if (chosen_phy == phydev->addr)
+#endif /* MY_DEF_HERE */
 		return 1;
 
 	return 0;
@@ -1103,10 +1152,18 @@ static int dp83640_probe(struct phy_device *phydev)
 	struct dp83640_private *dp83640;
 	int err = -ENOMEM, i;
 
+#if defined(MY_DEF_HERE)
+	if (phydev->mdio.addr == BROADCAST_ADDR)
+#else /* MY_DEF_HERE */
 	if (phydev->addr == BROADCAST_ADDR)
+#endif /* MY_DEF_HERE */
 		return 0;
 
+#if defined(MY_DEF_HERE)
+	clock = dp83640_clock_get_bus(phydev->mdio.bus);
+#else /* MY_DEF_HERE */
 	clock = dp83640_clock_get_bus(phydev->bus);
+#endif /* MY_DEF_HERE */
 	if (!clock)
 		goto no_clock;
 
@@ -1132,7 +1189,12 @@ static int dp83640_probe(struct phy_device *phydev)
 
 	if (choose_this_phy(clock, phydev)) {
 		clock->chosen = dp83640;
+#if defined(MY_DEF_HERE)
+		clock->ptp_clock = ptp_clock_register(&clock->caps,
+						      &phydev->mdio.dev);
+#else /* MY_DEF_HERE */
 		clock->ptp_clock = ptp_clock_register(&clock->caps, &phydev->dev);
+#endif /* MY_DEF_HERE */
 		if (IS_ERR(clock->ptp_clock)) {
 			err = PTR_ERR(clock->ptp_clock);
 			goto no_register;
@@ -1158,7 +1220,11 @@ static void dp83640_remove(struct phy_device *phydev)
 	struct list_head *this, *next;
 	struct dp83640_private *tmp, *dp83640 = phydev->priv;
 
+#if defined(MY_DEF_HERE)
+	if (phydev->mdio.addr == BROADCAST_ADDR)
+#else /* MY_DEF_HERE */
 	if (phydev->addr == BROADCAST_ADDR)
+#endif /* MY_DEF_HERE */
 		return;
 
 	enable_status_frames(phydev, false);
@@ -1184,6 +1250,23 @@ static void dp83640_remove(struct phy_device *phydev)
 
 	dp83640_clock_put(clock);
 	kfree(dp83640);
+}
+
+static int dp83640_soft_reset(struct phy_device *phydev)
+{
+	int ret;
+
+	ret = genphy_soft_reset(phydev);
+	if (ret < 0)
+		return ret;
+
+	/* From DP83640 datasheet: "Software driver code must wait 3 us
+	 * following a software reset before allowing further serial MII
+	 * operations with the DP83640."
+	 */
+	udelay(10);		/* Taking udelay inaccuracy into account */
+
+	return 0;
 }
 
 static int dp83640_config_init(struct phy_device *phydev)
@@ -1419,8 +1502,6 @@ static bool dp83640_rxtstamp(struct phy_device *phydev,
 		skb_info->tmo = jiffies + SKB_TIMESTAMP_TIMEOUT;
 		skb_queue_tail(&dp83640->rx_queue, skb);
 		schedule_delayed_work(&dp83640->ts_work, SKB_TIMESTAMP_TIMEOUT);
-	} else {
-		netif_rx_ni(skb);
 	}
 
 	return true;
@@ -1429,6 +1510,7 @@ static bool dp83640_rxtstamp(struct phy_device *phydev,
 static void dp83640_txtstamp(struct phy_device *phydev,
 			     struct sk_buff *skb, int type)
 {
+	struct dp83640_skb_info *skb_info = (struct dp83640_skb_info *)skb->cb;
 	struct dp83640_private *dp83640 = phydev->priv;
 
 	switch (dp83640->hwts_tx_en) {
@@ -1441,6 +1523,7 @@ static void dp83640_txtstamp(struct phy_device *phydev,
 		/* fall through */
 	case HWTSTAMP_TX_ON:
 		skb_shinfo(skb)->tx_flags |= SKBTX_IN_PROGRESS;
+		skb_info->tmo = jiffies + SKB_TIMESTAMP_TIMEOUT;
 		skb_queue_tail(&dp83640->tx_queue, skb);
 		break;
 
@@ -1481,6 +1564,7 @@ static struct phy_driver dp83640_driver = {
 	.flags		= PHY_HAS_INTERRUPT,
 	.probe		= dp83640_probe,
 	.remove		= dp83640_remove,
+	.soft_reset	= dp83640_soft_reset,
 	.config_init	= dp83640_config_init,
 	.config_aneg	= genphy_config_aneg,
 	.read_status	= genphy_read_status,
@@ -1490,12 +1574,20 @@ static struct phy_driver dp83640_driver = {
 	.hwtstamp	= dp83640_hwtstamp,
 	.rxtstamp	= dp83640_rxtstamp,
 	.txtstamp	= dp83640_txtstamp,
+#if defined(MY_DEF_HERE)
+//do nothing
+#else /* MY_DEF_HERE */
 	.driver		= {.owner = THIS_MODULE,}
+#endif /* MY_DEF_HERE */
 };
 
 static int __init dp83640_init(void)
 {
+#if defined(MY_DEF_HERE)
+	return phy_driver_register(&dp83640_driver, THIS_MODULE);
+#else /* MY_DEF_HERE */
 	return phy_driver_register(&dp83640_driver);
+#endif /* MY_DEF_HERE */
 }
 
 static void __exit dp83640_exit(void)
