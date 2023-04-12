@@ -25,7 +25,7 @@ VMLINUX_SYMBOL(system_certificate_list_size):
 	.long __cert_list_end - __cert_list_start
 #endif
 
-#ifdef MY_ABC_HERE
+#ifdef CONFIG_SYNO_SYSTEM_UNTRUSTED_KEYRING
 	.align 8
 	.globl VMLINUX_SYMBOL(system_certificate_list_untrusted)
 VMLINUX_SYMBOL(system_certificate_list_untrusted):

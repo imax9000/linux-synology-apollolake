@@ -22,10 +22,12 @@
 #include <linux/syscalls.h>
 #include <linux/utime.h>
 
-#ifdef MY_ABC_HERE
+#ifdef CONFIG_SYNO_RAMDISK_INTEGRITY_CHECK
 #include <crypto/hydrogen.h>
 bool ramdisk_check_failed;
-#endif /* MY_ABC_HERE */
+#else
+bool ramdisk_check_failed = false;
+#endif /* CONFIG_SYNO_RAMDISK_INTEGRITY_CHECK */
 
 static ssize_t __init xwrite(int fd, const char *p, size_t count)
 {
@@ -622,7 +624,7 @@ static void __init clean_rootfs(void)
 
 static int __init populate_rootfs(void)
 {
-#ifdef MY_ABC_HERE
+#ifdef CONFIG_SYNO_RAMDISK_INTEGRITY_CHECK
 	const char *ctx = "synology";
 	size_t rd_len = initrd_end - initrd_start - hydro_sign_BYTES;
 	uint8_t sig[hydro_sign_BYTES];
@@ -631,13 +633,13 @@ static int __init populate_rootfs(void)
 		__RAMDISK_SIGN_PUBLIC_KEY__
 	};
 
-#endif /* MY_ABC_HERE */
+#endif /* CONFIG_SYNO_RAMDISK_INTEGRITY_CHECK */
 
 	char *err = unpack_to_rootfs(__initramfs_start, __initramfs_size);
 	if (err)
 		panic("%s", err); /* Failed to decompress INTERNAL initramfs */
 
-#ifdef MY_ABC_HERE
+#ifdef CONFIG_SYNO_RAMDISK_INTEGRITY_CHECK
 	memcpy(sig, (const void *) (initrd_start + rd_len), hydro_sign_BYTES);
 
 	if (hydro_sign_verify(sig, (const void *) initrd_start, rd_len, ctx, pk)) {
@@ -647,7 +649,7 @@ static int __init populate_rootfs(void)
 		ramdisk_check_failed = false;
 		initrd_end -= hydro_sign_BYTES;
 	}
-#endif /* MY_ABC_HERE */
+#endif /* CONFIG_SYNO_RAMDISK_INTEGRITY_CHECK */
 
 	if (initrd_start) {
 #ifdef CONFIG_BLK_DEV_RAM

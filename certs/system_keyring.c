@@ -129,7 +129,7 @@ dodgy_cert:
 }
 late_initcall(load_system_certificate_list);
 
-#ifdef MY_ABC_HERE
+#ifdef CONFIG_SYNO_SYSTEM_UNTRUSTED_KEYRING
 /*
  * Load the compiled-in blacklist of X.509 certificates.
  */
