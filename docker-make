@@ -1,0 +1,5 @@
+#!/bin/sh
+
+docker run --rm -it -v "$(realpath "$(dirname "$0")"):/src" "$(docker build -q .)" \
+ "CFLAGS_KERNEL=-I/buildenv/usr/local/x86_64-pc-linux-gnu/x86_64-pc-linux-gnu/sys-root/usr/lib/modules/DSM-7.1/build/include" \
+ "$@"
